@@ -10,6 +10,7 @@
 #include "Triangulation.h"
 #include "Reconstruction.h"
 #include "Diagnostics.h"
+#include "Retrieval.h"
 
 #include <filesystem>
 
@@ -79,6 +80,12 @@ struct RunConfig {
     bool retriangulate = false;    // re-triangulate all registered pairs before global BA
     double trackMaxError = 4.0;    // px, completion and merge reprojection limit
 
+    // Matching (Phase 5)
+    int matchThreads = 0;          // 0 = all cores (deterministic), 1 = original sequential order
+    int loopCandidates = 5;        // retrieval candidates per image outside the window (0 = off)
+    int vocabularySize = 512;      // visual words for retrieval
+    int loopMinInliers = 50;       // F-RANSAC inliers required for a non-sequential pair
+
     // Diagnostics-only mode: sweep focal lengths and exit.
     bool focalSweep = false;
 };
@@ -108,6 +115,10 @@ void printUsage() {
             << "  --[no-]merge-tracks     merge landmarks linked by a correspondence\n"
             << "  --[no-]retriangulate    re-triangulate registered pairs before global BA\n"
             << "  --track-max-error E completion / merge reprojection limit [px] (default 4)\n"
+            << "  --match-threads N  0 = all cores (default), 1 = original sequential matching\n"
+            << "  --loop-candidates K retrieval pairs per image outside the window (default 5, 0 = off)\n"
+            << "  --vocabulary-size N visual words for retrieval (default 512)\n"
+            << "  --loop-min-inliers N inliers required for a non-sequential pair (default 50)\n"
             << "  --ba-max-error E   post-BA observation filter [px] (default 4)\n"
             << "  --ba-min-angle D   post-BA triangulation angle filter [deg] (default 1)\n"
             << "  --focal-sweep      only run the focal-length sweep\n";
@@ -152,6 +163,10 @@ void parseArguments(int argc, char **argv) {
         else if (arg == "--retriangulate") CONFIG.retriangulate = true;
         else if (arg == "--no-retriangulate") CONFIG.retriangulate = false;
         else if (arg == "--track-max-error") CONFIG.trackMaxError = stod(next());
+        else if (arg == "--match-threads") CONFIG.matchThreads = stoi(next());
+        else if (arg == "--loop-candidates") CONFIG.loopCandidates = stoi(next());
+        else if (arg == "--vocabulary-size") CONFIG.vocabularySize = stoi(next());
+        else if (arg == "--loop-min-inliers") CONFIG.loopMinInliers = stoi(next());
         else if (arg == "--ba-max-error") CONFIG.filterMaxError = stod(next());
         else if (arg == "--ba-min-angle") CONFIG.filterMinAngle = stod(next());
         else if (arg == "--focal-sweep") CONFIG.focalSweep = true;
@@ -193,6 +208,10 @@ string configDescription(const Mat &K) {
             << " | merge " << CONFIG.mergeTracks
             << " | retriangulate " << CONFIG.retriangulate
             << " | max error " << CONFIG.trackMaxError << " px\n"
+            << "  matching: threads " << CONFIG.matchThreads
+            << " | loop candidates " << CONFIG.loopCandidates
+            << " | vocabulary " << CONFIG.vocabularySize
+            << " | loop min inliers " << CONFIG.loopMinInliers << '\n'
             << "  post-BA filter: max error " << CONFIG.filterMaxError
             << " px, min angle " << CONFIG.filterMinAngle << " deg\n";
     return os.str();
@@ -291,6 +310,11 @@ vector<PairMatch> matchImagePairs(
     const int MATCH_WINDOW = 8;
     const int MIN_INLIERS = 30;
 
+    // Candidate pairs: every pair inside the sequential window, then
+    // (optionally) non-sequential pairs proposed by image retrieval.
+    vector<pair<int, int> > candidates;
+    vector<bool> isLoop;
+
     for (int i = 0; i < static_cast<int>(images.size()); i++) {
         int end = min(
             static_cast<int>(images.size()),
@@ -298,35 +322,91 @@ vector<PairMatch> matchImagePairs(
         );
 
         for (int j = i + 1; j < end; j++) {
-            auto matches = matcher.match(images[i], images[j]);
-
-            if (matches.size() < MIN_INLIERS)
-                continue;
-
-            auto inliers = matcher.geometricVerification(
-                images[i],
-                images[j],
-                matches
-            );
-
-            if (inliers.size() < MIN_INLIERS)
-                continue;
-
-            cout << "Pair " << i << " <-> " << j
-                    << " | Inliers: " << inliers.size()
-                    << '\n';
-
-            verifiedPairs.push_back({
-                i,
-                j,
-                move(inliers)
-            });
+            candidates.push_back({i, j});
+            isLoop.push_back(false);
         }
     }
 
+    if (CONFIG.loopCandidates > 0) {
+        Retrieval retrieval;
+        retrieval.build(images, CONFIG.vocabularySize, 200000);
+
+        auto loops = retrieval.candidatePairs(CONFIG.loopCandidates, MATCH_WINDOW);
+
+        for (const auto &p: loops) {
+            candidates.push_back(p);
+            isLoop.push_back(true);
+        }
+
+        cout << "Retrieval: " << loops.size()
+                << " non-sequential candidate pairs (top " << CONFIG.loopCandidates
+                << " per image, vocabulary " << CONFIG.vocabularySize << ")\n";
+    }
+
+    // Match and verify. In parallel mode every pair reseeds the C random
+    // generator used by FLANN's randomized kd-trees (its state is per thread),
+    // so the result of a pair does not depend on scheduling.
+    vector<vector<DMatch> > results(candidates.size());
+    const bool parallel = CONFIG.matchThreads != 1;
+
+    auto work = [&](int k) {
+        const auto [i, j] = candidates[k];
+
+        if (parallel)
+            srand(0x5EED);
+
+        auto matches = matcher.match(images[i], images[j]);
+
+        if (matches.size() < MIN_INLIERS)
+            return;
+
+        auto inliers = matcher.geometricVerification(images[i], images[j], matches);
+
+        const size_t required = isLoop[k] ? CONFIG.loopMinInliers : MIN_INLIERS;
+
+        if (inliers.size() >= required)
+            results[k] = move(inliers);
+    };
+
+    if (parallel) {
+        const int previousThreads = getNumThreads();
+        if (CONFIG.matchThreads > 1)
+            setNumThreads(CONFIG.matchThreads);
+
+        parallel_for_(Range(0, static_cast<int>(candidates.size())), [&](const Range &range) {
+            for (int k = range.start; k < range.end; k++)
+                work(k);
+        });
+
+        setNumThreads(previousThreads);
+    } else {
+        for (int k = 0; k < static_cast<int>(candidates.size()); k++)
+            work(k);
+    }
+
+    int loopPairs = 0;
+
+    for (size_t k = 0; k < candidates.size(); k++) {
+        if (results[k].empty())
+            continue;
+
+        const auto [i, j] = candidates[k];
+
+        cout << "Pair " << i << " <-> " << j
+                << " | Inliers: " << results[k].size()
+                << (isLoop[k] ? " [loop]" : "")
+                << '\n';
+
+        if (isLoop[k])
+            loopPairs++;
+
+        verifiedPairs.push_back({i, j, move(results[k])});
+    }
+
     cout << "\nMatching Completed"
-            << " | Total Verified Pairs: "
-            << verifiedPairs.size()
+            << " | Candidate Pairs: " << candidates.size()
+            << " | Total Verified Pairs: " << verifiedPairs.size()
+            << " | Loop Pairs: " << loopPairs
             << endl;
 
     return verifiedPairs;

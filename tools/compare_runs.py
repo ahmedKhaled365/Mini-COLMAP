@@ -39,6 +39,7 @@ def summarize(run):
         'pnp_mean': f"{statistics.mean(float(r['inlier_ratio']) for r in ok):.3f}" if ok else '-',
         'pnp_min': f"{min(float(r['inlier_ratio']) for r in ok):.3f}" if ok else '-',
         'step_cv': field(text, r'Camera step CV: ([\d.]+)'),
+        'long_range': field(text, r'Long-range landmarks: (\d+)'),
         'focal': field(text, r'final f ([\d.]+)', field(text, r'focal: ([\d.]+)')),
         'k1': field(text, r'final k1 (-?[\d.e-]+)', '0'),
     }
@@ -47,7 +48,7 @@ def summarize(run):
 
 COLUMNS = ['run', 'reg', 'landmarks', 'reliable', 'object', 'object_rel', 'track',
            'two_view_pct', 'angle_med', 'rp_med', 'rp_p95', 'pnp_mean', 'pnp_min',
-           'step_cv', 'focal', 'k1']
+           'step_cv', 'long_range', 'focal', 'k1']
 
 
 def main():

@@ -40,6 +40,7 @@ add_executable(Mini-COLMAP
         src/Reconstruction.cpp
         src/BundleAdjuster.cpp
         src/Diagnostics.cpp
+        src/Retrieval.cpp
 )
 
 # Compiler options

@@ -295,6 +295,14 @@ ReconstructionReport Diagnostics::analyze(
         if (reliable)
             r.reliableLandmarks++;
 
+        int minId = INT_MAX, maxId = INT_MIN;
+        for (const auto &obs: landmark.observations) {
+            minId = min(minId, obs.imageId);
+            maxId = max(maxId, obs.imageId);
+        }
+        if (maxId - minId > config.longRangeSpan)
+            r.longRangeLandmarks++;
+
         if (inRegion) {
             r.objectRegionLandmarks++;
             if (reliable)
@@ -386,6 +394,7 @@ void Diagnostics::printSummary(const ReconstructionReport &r, ostream &out) {
     for (int i = 0; i < 6; i++)
         out << r.angleHistogram[i] << (i < 5 ? " / " : "\n");
     out << "Reliable landmarks: " << r.reliableLandmarks << '\n';
+    out << "Long-range landmarks: " << r.longRangeLandmarks << '\n';
     out << "Object region: " << r.objectRegionLandmarks
             << " landmarks (" << r.objectRegionReliable << " reliable)"
             << " | reproj median " << setprecision(3)

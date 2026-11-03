@@ -275,3 +275,73 @@ T0 runs reproduce the Phase 3 / expansion runs exactly. T1b is completion with a
   * The orbit doesn't close: frames 58–64 come back near frames 0–4, but window-8 matching never links them, so the offset there is uncorrected drift.
   * f drifts to 1182 px and k1 to −0.021.
   * **Loop-closure matching is therefore needed from about 60 images, not 140.**
+
+---
+
+# Phase 5: Loop closure and expansion
+
+## Matching changes
+
+* **Parallel pair matching** (`--match-threads`, default 0 = all cores):
+  * Every pair reseeds the C random generator used by FLANN's randomised kd-trees, so results don't depend on thread scheduling. 2 and 8 threads give identical output.
+  * `--match-threads 1` restores the original sequential order and reproduces Phase 4 exactly (`M_seq_n20`).
+  * The parallel default differs only by kd-tree seeding (99 vs 101 verified pairs at 20 images), within run-to-run noise. 20-image runtime: 35 s → 20 s.
+* **Loop-closure candidates** (`--loop-candidates K`):
+  * A bag-of-visual-words retrieval: 512-word k-means vocabulary over 200k sampled SIFT descriptors, fixed seed, tf-idf, cosine similarity.
+  * Proposes the K most similar images outside the 8-frame window for every image.
+  * Those pairs go through the same matching + F-RANSAC and need ≥ 50 inliers (`--loop-min-inliers`).
+* **New metric, long-range landmarks:** landmarks seen by images more than 30 frames apart. These only exist when the start and end of the orbit are connected.
+
+## 65 images (one full orbit)
+
+| run | reg | landmarks | reliable | object | object_rel | track | two_view_pct | angle_med | rp_med | rp_p95 | pnp_mean | pnp_min | step_cv | long_range | focal | k1 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| T1_complete_n20 | 20 | 3501 | 1542 | 788 | 429 | 3.94 | 33.8 | 2.99 | 0.377 | 1.184 | 0.928 | 0.786 | 0.497 | - | 1167.43 | -0.0267202 |
+| M_seq_n20 | 20 | 3501 | 1542 | 788 | 429 | 3.94 | 33.8 | 2.99 | 0.377 | 1.184 | 0.928 | 0.786 | 0.497 | 0 | 1167.43 | -0.0267202 |
+| M_par8_n20 | 20 | 3430 | 1532 | 772 | 425 | 3.94 | 32.8 | 2.93 | 0.380 | 1.176 | 0.910 | 0.725 | 0.498 | 0 | 1168.79 | -0.025659 |
+| L0_n65 | 65 | 11323 | 4996 | 2351 | 1002 | 3.85 | 36.3 | 3.33 | 0.409 | 1.302 | 0.879 | 0.711 | 0.311 | 0 | 1180.42 | -0.0211174 |
+| L1_loop5_n65 | 65 | 10533 | 4618 | 2045 | 900 | 4.17 | 35.4 | 3.35 | 0.443 | 1.395 | 0.881 | 0.625 | 0.299 | 1636 | 1161.56 | -0.0284744 |
+| L2_loop5_merge_n65 | 65 | 10228 | 4403 | 2082 | 894 | 4.18 | 39.1 | 3.49 | 0.439 | 1.411 | 0.877 | 0.370 | 0.302 | 1603 | 1160.06 | -0.0286576 |
+| L3_loop10_merge_n65 | 65 | 10305 | 4405 | 2072 | 879 | 4.19 | 39.0 | 3.38 | 0.444 | 1.422 | 0.884 | 0.350 | 0.302 | 1707 | 1159.89 | -0.0286199 |
+
+* **The loop pairs are genuine.** K=5 proposes 224 candidates and 53 pass. They form a consistent band at gaps 52–60 (frames 0–11 ↔ 56–64, up to 569 inliers), plus a few pairs just outside the window. There are no scattered gaps that would suggest repeated-structure confusion.
+* **The orbit is connected:** long-range landmarks go from 0 to about 1,600.
+* **Self-calibration independently confirms loop closure:**
+  * With the loop: f = 1160 px, k1 = −0.0285, matching every 20–50-image subset (1164–1172, −0.026 … −0.030).
+  * Without it: 1180 / −0.021. The open chain was compensating drift through the intrinsics.
+* **Where the two arms meet:**
+  * With the loop connected, registration grows in both directions from the initial pair (61–64), and the arms meet on the far side (frames 23–41).
+  * The last images registered there have lower PnP inlier ratios (0.63; 0.35–0.37 with merging) because they see two slightly misaligned arms.
+  * After the final global BA the junction is reconciled: per-camera RMS for frames 18–44 is 0.72–0.74 px (vs 0.68 px without the loop), with every camera under 1 px.
+* **Cost of loop closure:**
+  * 8% fewer reliable points and slightly higher residuals (P95 1.30 → 1.40 px).
+  * That's expected when an open chain that could absorb inconsistency by drifting becomes a closed, more constrained one. Lower residuals in the open chain don't mean better geometry.
+* **Merging (L2) is slightly harmful here:** 162 merges, fewer reliable points (4618 → 4403), more two-view points (35 → 39%). It stays off.
+* **K = 10 (L3)** finds 67 loop pairs instead of 53 with no measurable gain. K = 5 is used.
+
+## Expansion to 100 and 151 images
+
+| run | reg | landmarks | reliable | object | object_rel | track | two_view_pct | angle_med | rp_med | rp_p95 | pnp_mean | pnp_min | step_cv | long_range | focal | k1 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| L1_loop5_n65 | 65 | 10533 | 4618 | 2045 | 900 | 4.17 | 35.4 | 3.35 | 0.443 | 1.395 | 0.881 | 0.625 | 0.299 | 1636 | 1161.56 | -0.0284744 |
+| X100_loop5 | 100 | 15290 | 6667 | 2706 | 1167 | 4.23 | 38.1 | 3.51 | 0.450 | 1.419 | 0.894 | 0.388 | 0.305 | 3232 | 1160.32 | -0.0291106 |
+| X151_noloop | 135 | 21315 | 9771 | 3291 | 1360 | 3.67 | 38.1 | 3.31 | 0.394 | 1.277 | 0.905 | 0.671 | 0.282 | 0 | 1179.51 | -0.0219596 |
+| X151_loop5 | 151 | 20838 | 8484 | 3521 | 1424 | 4.67 | 39.0 | 3.32 | 0.496 | 1.534 | 0.889 | 0.454 | 0.294 | 8546 | 1158.89 | -0.0304616 |
+
+| Run | Registered | Loop pairs | Worst PnP ratio (images) | BA calls applied | Runtime |
+|---|---|---|---|---|---|
+| `X100_loop5` | 100 / 100 | 92 | 0.39 (42), 0.46 (41) | 115 / 115 | 484 s* |
+| `X151_noloop` | **135 / 151** | 0 | 0.67 (18) | 151 / 151 | 492 s* |
+| `X151_loop5` | **151 / 151** | 276 | 0.45 (41), 0.47 (90) | 168 / 168 | 522 s* |
+
+\* Three runs at once on 8 cores; a single run is faster.
+
+* **The dataset is three concentric orbits:** an outer ring (about frames 0–64), a middle ring and an inner close-up ring (about 135–150). This shows in `X151_loop5/preview.png`.
+* **Without loop closure, frames 135–150 never register.** The sequence enters the close-up ring with almost no sequential overlap: frame 135 had 16 correspondences and failed the inlier threshold. Retrieval pairs connect the ring to the rest of the model, and all 151 images register.
+* **Self-calibration agrees across every loop-closed size:** f = 1159–1162 px, k1 = −0.028 … −0.030 at 65, 100 and 151 images. Without loop closure at 151 images, the drift signature appears again: 1180 px, −0.022.
+* **Connectivity:** 8,546 long-range landmarks. Mean track length rises to 4.7 views. 20,838 landmarks in total, 8,484 reliable, 1,424 reliable in the statue region.
+* **The horse is recognisable from all sides,** with head, neck, body, tail and four legs (`X151_loop5/preview.png`, `points_reliable.ply`).
+* **Remaining weakness:**
+  * Images 40–42 (where the two arms of the outer orbit meet) and 90 register with low PnP inlier ratios (0.45–0.47 at 151 images).
+  * After the final global BA their residuals are in the normal range, but more frequent global BA during registration would likely improve the junction.
+* **Default from this phase:** `--loop-candidates 5`. Merging stays off.

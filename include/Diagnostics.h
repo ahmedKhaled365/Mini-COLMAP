@@ -56,6 +56,9 @@ struct DiagnosticsConfig {
 
     // PLY encoding: binary little-endian (default) or ASCII
     bool binaryPly = true;
+
+    // Sequence span (frames) above which a landmark counts as long-range
+    int longRangeSpan = 30;
 };
 
 struct CameraStats {
@@ -81,6 +84,11 @@ struct ReconstructionReport {
     vector<CameraStats> cameras;
 
     size_t reliableLandmarks = 0;
+
+    // Landmarks observed by images more than longRangeSpan frames apart in
+    // the sequence; with sequential-window matching these only appear when
+    // the start and end of an orbit are connected (loop closure).
+    size_t longRangeLandmarks = 0;
 
     // Scene geometry proxies (no ground truth available)
     Point3d lookAt;                  // least-squares intersection of optical axes
