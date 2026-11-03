@@ -1,0 +1,2 @@
+label,registered,variable_cameras,constant_cameras,points,residuals,initial_cost,final_cost,rms_before,rms_after,iterations,termination,seconds,focal_before,focal_after,k1_before,k1_after,applied,reason,filtered_observations,removed_landmarks
+global,20,19,1,5536,15914,7205.47470,1926.56383,0.97897,0.49246,41,CONVERGENCE,5.15140,1200.00000,1200.00000,0.00000,0.00000,1,ok,0,1529

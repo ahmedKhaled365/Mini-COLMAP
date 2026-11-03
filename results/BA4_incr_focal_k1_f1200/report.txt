@@ -1,0 +1,62 @@
+Mini-COLMAP run
+  data: ../data/horse
+  images: 20
+  features: 3500
+  focal: 1167.12 px (cx 960, cy 540)
+  initial pair: automatic (parallax)
+  init gates: H/E <= 0.8, median angle >= 4 deg, landmarks >= 100, triangulated/E >= 0.9, target angle 8 deg
+  bundle adjustment: incremental | local images 6 | global ratio 1.25 | huber 2 | refine focal 1 | refine k1 1
+  post-BA filter: max error 4 px, min angle 1 deg
+  selected initial pair: 2-6 | initial landmarks 277
+  intrinsics: initial f 1200 px | final f 1167.12 px | final k1 -0.0279331
+
+
+========== DIAGNOSTICS ==========
+Registered: 20 / 20 | Landmarks: 3643 | Observations: 10938 | Negative-depth obs: 0
+Reprojection [px]: mean 0.363 | median 0.276 | P95 0.994 | max 3.510 | RMS 0.482 (n=10938)
+Track length: mean 3.00 | 2-view 2046 | 3-view 731 | 4+ view 866
+Tri. angle [deg]: mean 5.64 | median 2.62 | P95 20.90 | max 73.87 | RMS 9.29 (n=3643)
+Angle bins <1/1-2/2-5/5-10/10-20/20+: 0 / 1364 / 1223 / 478 / 375 / 203
+Reliable landmarks: 1264
+Object region: 846 landmarks (356 reliable) | reproj median 0.227 px
+Camera step CV: 0.496
+
+Track length histogram:
+  2 views: 2046
+  3 views: 731
+  4 views: 372
+  5 views: 173
+  6 views: 114
+  7 views: 104
+  8 views: 63
+  9 views: 30
+  10 views: 3
+  11 views: 3
+  12 views: 1
+  13 views: 3
+
+LookAt point: [0.2659, -0.3914, 3.9352] | median camera distance: 3.9629
+Camera step: mean 0.3983 | median 0.4776 | P95 0.6226 | max 0.6442 | RMS 0.4446 (n=19)
+
+Per-camera reprojection:
+  image  obs     rms[px]   center
+      0    426     0.547   [-0.3250, 0.0717, -0.1525]
+      1    596     0.421   [-0.2043, 0.0554, -0.1083]
+      2    668     0.511   [-0.0000, -0.0000, -0.0000]
+      3    789     0.457   [0.3985, -0.0200, -0.0081]
+      4    880     0.512   [0.6442, -0.0584, 0.1288]
+      5    766     0.420   [0.9874, -0.0573, 0.0396]
+      6    413     0.701   [0.9954, -0.0432, 0.0844]
+      7    373     0.416   [0.9947, -0.0459, 0.1081]
+      8    795     0.534   [1.1411, -0.0779, 0.1052]
+      9    698     0.517   [1.4415, -0.1763, 0.0878]
+     10    608     0.472   [1.8858, -0.3371, 0.1575]
+     11    537     0.489   [2.3458, -0.4111, 0.4228]
+     12    440     0.448   [2.8307, -0.4389, 0.6830]
+     13    351     0.506   [3.2261, -0.5137, 1.1400]
+     14    320     0.599   [3.4231, -0.5646, 1.6693]
+     15    435     0.497   [3.6639, -0.6085, 2.2171]
+     16    488     0.371   [3.7655, -0.6690, 2.7316]
+     17    509     0.409   [3.8342, -0.7109, 3.2140]
+     18    449     0.384   [3.9023, -0.7470, 3.8535]
+     19    397     0.320   [3.8009, -0.7896, 4.4663]

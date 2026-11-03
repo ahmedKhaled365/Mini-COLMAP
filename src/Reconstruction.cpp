@@ -6,8 +6,169 @@
 Reconstruction::Reconstruction(vector<ImageData> &images) : images(images) {
 }
 
-bool Reconstruction::runBundleAdjustment(const Mat& K) {
-    return BundleAdjuster::optimize(images, landmarks, K);
+bool Reconstruction::runBundleAdjustment(Mat &K) {
+    BAOptions options;
+    return globalBundleAdjustment(K, options).applied;
+}
+
+BAResult Reconstruction::localBundleAdjustment(
+    int imageId,
+    Mat &K,
+    const BAOptions &options,
+    int numNeighbors
+) {
+    // Rank registered images by the number of landmarks shared with imageId
+    map<int, int> shared;
+
+    for (int kp = 0; kp < static_cast<int>(observationToLandmark[imageId].size()); kp++) {
+        int landmarkId = observationToLandmark[imageId][kp];
+        if (landmarkId < 0)
+            continue;
+
+        for (const auto &obs: landmarks[landmarkId].observations) {
+            if (obs.imageId != imageId && images[obs.imageId].registered)
+                shared[obs.imageId]++;
+        }
+    }
+
+    vector<pair<int, int> > ranked;
+    for (const auto &[id, count]: shared)
+        ranked.push_back({count, id});
+    sort(ranked.begin(), ranked.end(), greater<>());
+
+    set<int> variableCameras = {imageId};
+    for (int i = 0; i < min(numNeighbors, static_cast<int>(ranked.size())); i++)
+        variableCameras.insert(ranked[i].second);
+
+    set<int> variablePoints;
+    for (int l = 0; l < static_cast<int>(landmarks.size()); l++) {
+        for (const auto &obs: landmarks[l].observations) {
+            if (variableCameras.count(obs.imageId)) {
+                variablePoints.insert(l);
+                break;
+            }
+        }
+    }
+
+    BAResult result = BundleAdjuster::optimize(
+        images, landmarks, K, k1,
+        variableCameras, variablePoints,
+        anchor1, anchor2, options
+    );
+
+    baLog.push_back(result);
+    return result;
+}
+
+BAResult Reconstruction::globalBundleAdjustment(Mat &K, const BAOptions &options) {
+    set<int> variableCameras, variablePoints;
+
+    for (const auto &img: images) {
+        if (img.registered)
+            variableCameras.insert(img.id);
+    }
+
+    for (int l = 0; l < static_cast<int>(landmarks.size()); l++)
+        variablePoints.insert(l);
+
+    const double focal = K.at<double>(0, 0);
+    const double distortion = k1;
+
+    BAResult result = BundleAdjuster::optimize(
+        images, landmarks, K, k1,
+        variableCameras, variablePoints,
+        anchor1, anchor2, options
+    );
+
+    if (result.applied &&
+        (K.at<double>(0, 0) != focal || k1 != distortion))
+        updateUndistortedKeypoints(K);
+
+    baLog.push_back(result);
+    return result;
+}
+
+void Reconstruction::updateUndistortedKeypoints(const Mat &K) {
+    Mat dist = (Mat_<double>(1, 4) << k1, 0, 0, 0);
+
+    for (auto &img: images) {
+        if (img.rawPoints.empty())
+            continue;
+
+        vector<Point2f> undistorted = img.rawPoints;
+
+        if (k1 != 0.0)
+            undistortPoints(img.rawPoints, undistorted, K, dist, noArray(), K);
+
+        for (size_t i = 0; i < undistorted.size(); i++)
+            img.keypoints[i].pt = undistorted[i];
+    }
+}
+
+pair<int, int> Reconstruction::filterLandmarks(
+    const set<int> &candidates,
+    const Mat &K,
+    double maxError,
+    double minAngle
+) {
+    int removedObservations = 0;
+    vector<bool> keep(landmarks.size(), true);
+
+    auto check = [&](int l) {
+        auto &observations = landmarks[l].observations;
+        vector<Observation> kept;
+
+        for (const auto &obs: observations) {
+            double depth = 0;
+            double error = Diagnostics::observationError(
+                images[obs.imageId], landmarks[l].position, obs.keypointId, K, &depth
+            );
+
+            if (depth > 0 && error <= maxError)
+                kept.push_back(obs);
+            else
+                removedObservations++;
+        }
+
+        observations = kept;
+
+        if (observations.size() < 2 ||
+            Diagnostics::maxTriangulationAngle(images, landmarks[l]) < minAngle)
+            keep[l] = false;
+    };
+
+    if (candidates.empty()) {
+        for (int l = 0; l < static_cast<int>(landmarks.size()); l++)
+            check(l);
+    } else {
+        for (int l: candidates)
+            check(l);
+    }
+
+    int removedLandmarks = static_cast<int>(count(keep.begin(), keep.end(), false));
+    compactLandmarks(keep);
+
+    return {removedObservations, removedLandmarks};
+}
+
+void Reconstruction::compactLandmarks(const vector<bool> &keep) {
+    vector<Landmark> compacted;
+    compacted.reserve(landmarks.size());
+
+    for (size_t l = 0; l < landmarks.size(); l++) {
+        if (keep[l])
+            compacted.push_back(move(landmarks[l]));
+    }
+
+    landmarks = move(compacted);
+
+    for (auto &index: observationToLandmark)
+        fill(index.begin(), index.end(), -1);
+
+    for (int l = 0; l < static_cast<int>(landmarks.size()); l++) {
+        for (const auto &obs: landmarks[l].observations)
+            observationToLandmark[obs.imageId][obs.keypointId] = l;
+    }
 }
 
 void Reconstruction::printTrackStatistics() const {
@@ -470,6 +631,9 @@ void Reconstruction::initialize(int id1, int id2, PoseResult &pose, vector<Landm
     images[id2].R = pose.R.clone();
     images[id2].t = pose.t.clone();
     images[id2].registered = true;
+
+    anchor1 = id1;
+    anchor2 = id2;
 
     landmarks = initialLandmarks;
 

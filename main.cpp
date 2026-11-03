@@ -25,9 +25,9 @@ vector<string> IMAGE_PATHS = {};
 const bool VISUALIZE = false;
 const int MIN_INITIAL_POINTS = 15;
 
-// Run configuration. The defaults reproduce the original pipeline;
-// every value can be overridden from the command line so experiments
-// are reproducible (see parseArguments).
+// Run configuration. Defaults are the best measured configuration
+// (results/README.md); every value can be overridden from the command
+// line so experiments are reproducible (see parseArguments).
 struct RunConfig {
     string dataDir = "../data/horse";
     string outDir = "../results/latest";
@@ -52,6 +52,21 @@ struct RunConfig {
     int initialId1 = 6;
     int initialId2 = 7;
 
+    // Bundle adjustment: "none", "final" (one global BA at the end) or
+    // "incremental" (local BA after every registration, periodic global BA)
+    string baMode = "incremental";
+    int localBaImages = 6;        // neighbors optimized with the new image
+    double globalBaRatio = 1.25;  // global BA when registered count grows by 25%
+    double huberScale = 2.0;      // px
+    int baThreads = 1;            // 1 = reproducible, 0 = all cores
+    bool refineFocal = true;      // shared focal length in global BA
+    bool refineK1 = true;         // shared radial distortion in global BA
+    int minCamerasForIntrinsics = 8;
+
+    // Outlier filtering after each BA
+    double filterMaxError = 4.0;  // px
+    double filterMinAngle = 1.0;  // deg, same as the creation threshold
+
     // Diagnostics-only mode: sweep focal lengths and exit.
     bool focalSweep = false;
 };
@@ -69,6 +84,14 @@ void printUsage() {
             << "  --init MODE        initial pair selection: parallax | legacy\n"
             << "  --min-init-angle D minimum median triangulation angle [deg] (default 4)\n"
             << "  --max-h-ratio R    maximum homography / essential inlier ratio (default 0.8)\n"
+            << "  --ba MODE          bundle adjustment: none | final | incremental\n"
+            << "  --local-ba-images N neighbors in local BA (default 6)\n"
+            << "  --no-refine-focal  keep the focal length fixed\n"
+            << "  --no-refine-k1     keep k1 fixed (0)\n"
+            << "  --huber D          Huber loss scale [px] (default 2)\n"
+            << "  --ba-threads N     Ceres threads (default 1 = reproducible, 0 = all)\n"
+            << "  --ba-max-error E   post-BA observation filter [px] (default 4)\n"
+            << "  --ba-min-angle D   post-BA triangulation angle filter [deg] (default 1)\n"
             << "  --focal-sweep      only run the focal-length sweep\n";
 }
 
@@ -94,6 +117,16 @@ void parseArguments(int argc, char **argv) {
         } else if (arg == "--init") CONFIG.initMode = next();
         else if (arg == "--min-init-angle") CONFIG.minInitAngle = stod(next());
         else if (arg == "--max-h-ratio") CONFIG.maxHomographyRatio = stod(next());
+        else if (arg == "--ba") CONFIG.baMode = next();
+        else if (arg == "--local-ba-images") CONFIG.localBaImages = stoi(next());
+        else if (arg == "--refine-focal") CONFIG.refineFocal = true;
+        else if (arg == "--no-refine-focal") CONFIG.refineFocal = false;
+        else if (arg == "--no-refine-k1") CONFIG.refineK1 = false;
+        else if (arg == "--refine-k1") CONFIG.refineK1 = true;
+        else if (arg == "--huber") CONFIG.huberScale = stod(next());
+        else if (arg == "--ba-threads") CONFIG.baThreads = stoi(next());
+        else if (arg == "--ba-max-error") CONFIG.filterMaxError = stod(next());
+        else if (arg == "--ba-min-angle") CONFIG.filterMinAngle = stod(next());
         else if (arg == "--focal-sweep") CONFIG.focalSweep = true;
         else if (arg == "--help" || arg == "-h") {
             printUsage();
@@ -122,7 +155,15 @@ string configDescription(const Mat &K) {
             << ", median angle >= " << CONFIG.minInitAngle
             << " deg, landmarks >= " << CONFIG.minInitLandmarks
             << ", triangulated/E >= " << CONFIG.minInitTriangulatedRatio
-            << ", target angle " << CONFIG.targetInitAngle << " deg\n";
+            << ", target angle " << CONFIG.targetInitAngle << " deg\n"
+            << "  bundle adjustment: " << CONFIG.baMode
+            << " | local images " << CONFIG.localBaImages
+            << " | global ratio " << CONFIG.globalBaRatio
+            << " | huber " << CONFIG.huberScale
+            << " | refine focal " << CONFIG.refineFocal
+            << " | refine k1 " << CONFIG.refineK1 << '\n'
+            << "  post-BA filter: max error " << CONFIG.filterMaxError
+            << " px, min angle " << CONFIG.filterMinAngle << " deg\n";
     return os.str();
 }
 
@@ -165,6 +206,10 @@ vector<ImageData> loadImages(
             throw runtime_error("Cannot load image: " + img.path);
 
         extractor.extract(img);
+
+        img.rawPoints.reserve(img.keypoints.size());
+        for (const auto &kp: img.keypoints)
+            img.rawPoints.push_back(kp.pt);
 
         cout << "Image " << i
                 << " | Features: " << img.keypoints.size()
@@ -498,6 +543,66 @@ void saveCheckpoint(
     cout.unsetf(ios::floatfield);
 }
 
+// Runs one bundle adjustment followed by outlier filtering and prints a
+// one-line summary. imageId < 0 means global BA.
+void runBundleAdjustment(
+    Reconstruction &reconstruction,
+    Mat &K,
+    int imageId,
+    bool allowIntrinsics
+) {
+    int registered = 0;
+    for (const auto &img: reconstruction.getImages()) {
+        if (img.registered)
+            registered++;
+    }
+
+    BAOptions options;
+    options.huberScale = CONFIG.huberScale;
+    options.numThreads = CONFIG.baThreads;
+
+    BAResult result;
+
+    if (imageId < 0) {
+        const bool intrinsics = allowIntrinsics &&
+                                registered >= CONFIG.minCamerasForIntrinsics;
+        options.label = "global";
+        options.maxIterations = 100;
+        options.refineFocal = intrinsics && CONFIG.refineFocal;
+        options.refineK1 = intrinsics && CONFIG.refineK1;
+        result = reconstruction.globalBundleAdjustment(K, options);
+    } else {
+        options.label = "local";
+        options.maxIterations = 50;
+        result = reconstruction.localBundleAdjustment(
+            imageId, K, options, CONFIG.localBaImages
+        );
+    }
+
+    auto &entry = reconstruction.getBALog().back();
+
+    if (result.applied) {
+        auto [observations, removed] = reconstruction.filterLandmarks(
+            {}, K, CONFIG.filterMaxError, CONFIG.filterMinAngle
+        );
+        entry.filteredObservations = observations;
+        entry.removedLandmarks = removed;
+    }
+
+    cout << fixed << setprecision(3)
+            << "[BA " << entry.label << "] cams " << entry.variableCameras
+            << "+" << entry.constantCameras << " const | points " << entry.points
+            << " | RMS " << entry.rmsBefore << " -> " << entry.rmsAfter
+            << " px | " << entry.termination << " (" << entry.iterations << " it)"
+            << " | " << (entry.applied ? "applied" : "REJECTED: " + entry.reason)
+            << " | filtered obs " << entry.filteredObservations
+            << ", landmarks " << entry.removedLandmarks;
+    if (options.refineFocal || options.refineK1)
+        cout << " | f " << entry.focalAfter << " k1 " << setprecision(4) << entry.k1After;
+    cout << '\n';
+    cout.unsetf(ios::floatfield);
+}
+
 void registerRemainingImages(
     Reconstruction &reconstruction,
     vector<ImageData> &images,
@@ -505,6 +610,8 @@ void registerRemainingImages(
     Mat &K,
     const Diagnostics &diagnostics
 ) {
+    // Registered count at the last global BA (incremental mode)
+    int lastGlobal = 2;
     constexpr int MIN_CORRESPONDENCES = 10;
 
     int totalRegistered = 0;
@@ -565,6 +672,15 @@ void registerRemainingImages(
             for (const auto &img: images) {
                 if (img.registered)
                     ++registeredCount;
+            }
+
+            if (CONFIG.baMode == "incremental") {
+                runBundleAdjustment(reconstruction, K, imageId, false);
+
+                if (registeredCount >= ceil(lastGlobal * CONFIG.globalBaRatio)) {
+                    runBundleAdjustment(reconstruction, K, -1, true);
+                    lastGlobal = registeredCount;
+                }
             }
 
             if (registeredCount == 5 ||
@@ -742,6 +858,12 @@ int main(int argc, char **argv) {
             );
         }
 
+        const double initialFocal = K.at<double>(0, 0);
+
+        // Refine the initial two-view reconstruction (gauge: anchor pair)
+        if (CONFIG.baMode == "incremental")
+            runBundleAdjustment(reconstruction, K, -1, false);
+
         Diagnostics diagnostics;
         saveCheckpoint(reconstruction, diagnostics, K, "checkpoint_002_cameras");
 
@@ -753,6 +875,12 @@ int main(int argc, char **argv) {
             K,
             diagnostics
         );
+
+        // Step 7: Final global Bundle Adjustment
+        if (CONFIG.baMode == "incremental" || CONFIG.baMode == "final")
+            runBundleAdjustment(reconstruction, K, -1, true);
+
+        BundleAdjuster::writeLog(reconstruction.getBALog(), outPath("ba_log.csv"));
 
         reconstruction.printTrackStatistics();
 
@@ -766,7 +894,10 @@ int main(int argc, char **argv) {
         header << configDescription(K)
                 << "  selected initial pair: " << startingPair.idx1
                 << "-" << startingPair.idx2
-                << " | initial landmarks " << initial.landmarks.size() << '\n';
+                << " | initial landmarks " << initial.landmarks.size() << '\n'
+                << "  intrinsics: initial f " << initialFocal
+                << " px | final f " << K.at<double>(0, 0)
+                << " px | final k1 " << reconstruction.getK1() << '\n';
 
         Diagnostics::writeReport(report, outPath("report.txt"), header.str());
         Diagnostics::writeRegistrationCsv(
@@ -789,22 +920,6 @@ int main(int argc, char **argv) {
         );
 
         cout << "\nOutputs written to: " << CONFIG.outDir << '\n';
-
-        // Step 8: Run Bundle Adjustment
-        cout << "\nStarting Bundle Adjustment...\n";
-
-        // bool optimized = reconstruction.runBundleAdjustment(K);
-
-        // cout << "Bundle Adjustment Success: "
-        //      << boolalpha << optimized << '\n';
-
-        // Step 9: Export point cloud after Bundle Adjustment
-        // if (optimized) {
-        //     if (!reconstruction.exportPLY("horse_after_BA.ply"))
-        //         throw runtime_error("Failed to export after-BA PLY");
-        // } else {
-        //     cerr << "Bundle Adjustment failed\n";
-        // }
 
         cout << "\nTotal 3D Landmarks: "
                 << reconstruction.getLandmarkCount()

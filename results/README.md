@@ -77,3 +77,68 @@ Mini-COLMAP.exe --focal-sweep --out ../results/calib_sweep_20img
 ```
 
 Baseline B0 and the `A_*` / `AB_*` runs were made with the Phase 1 commit (diagnostics only, original initializer).
+
+---
+
+# Phase 3: Bundle adjustment (20 images)
+
+**Shared settings for every Phase 3 run:**
+- parallax initializer;
+- Huber loss 2 px;
+- SPARSE_SCHUR, Levenberg–Marquardt, 1 Ceres thread (bit-reproducible);
+- post-BA filter: drop observations above 4 px or behind the camera, then landmarks with fewer than 2 views or under 1° maximum angle (the same angle as at creation).
+
+| Run | BA | Intrinsics |
+|---|---|---|
+| `BA1_final` | one global BA after all registrations | fixed f = 1200 |
+| `BA2_incremental_fXXXX` | local BA (new image + 6 best-connected) after every registration, global BA after init and every +25% cameras, final global BA | fixed f = XXXX |
+| `BA3_incr_focal_fXXXX` | as BA2 | shared f refined in global BA (≥ 8 cameras), starting at XXXX |
+| `BA4_incr_focal_k1_fXXXX` | as BA2 | shared f and k1 refined, starting at XXXX (**current default**, start 1200) |
+
+| run | reg | landmarks | reliable | object | object_rel | track | two_view_pct | angle_med | rp_med | rp_p95 | pnp_mean | pnp_min | step_cv | focal | k1 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| B0_baseline_f1344 | 20 | 6860 | 1354 | 991 | 146 | 2.71 | 63.0 | 2.88 | 0.546 | 2.655 | 0.697 | 0.548 | 0.463 | 1344 | 0 |
+| P_parallax_f1133 | 20 | 3835 | 826 | 571 | 167 | 2.88 | 60.6 | 2.48 | 0.563 | 2.358 | 0.737 | 0.518 | 0.555 | 1133 | 0 |
+| P_parallax_f1200 | 20 | 5536 | 1480 | 956 | 195 | 2.87 | 56.8 | 2.59 | 0.437 | 2.160 | 0.835 | 0.612 | 0.500 | 1200 | 0 |
+| P_parallax_f1344 | 20 | 6189 | 1217 | 1101 | 128 | 2.74 | 61.1 | 2.94 | 0.562 | 2.568 | 0.732 | 0.568 | 0.514 | 1344 | 0 |
+| BA1_final | 20 | 4007 | 1296 | 969 | 347 | 3.13 | 45.3 | 2.38 | 0.334 | 1.052 | 0.835 | 0.612 | 0.497 | 1200 | 0 |
+| BA2_incremental_f1133 | 20 | 2606 | 957 | 795 | 346 | 3.04 | 55.4 | 3.61 | 0.297 | 1.186 | 0.899 | 0.778 | 0.488 | 1133 | 0 |
+| BA2_incremental_f1200 | 20 | 3818 | 1315 | 897 | 377 | 2.97 | 56.5 | 2.55 | 0.308 | 1.041 | 0.896 | 0.743 | 0.499 | 1200 | 0 |
+| BA2_incremental_f1344 | 20 | 5425 | 2046 | 1048 | 413 | 2.85 | 59.0 | 3.05 | 0.432 | 1.397 | 0.822 | 0.638 | 0.512 | 1344 | 0 |
+| BA3_incr_focal_f1133 | 20 | 3869 | 1490 | 915 | 401 | 2.91 | 57.6 | 2.73 | 0.291 | 1.015 | 0.920 | 0.760 | 0.500 | 1213.73 | 0 |
+| BA3_incr_focal_f1200 | 20 | 3953 | 1419 | 926 | 390 | 2.95 | 57.3 | 2.63 | 0.308 | 1.043 | 0.901 | 0.721 | 0.499 | 1213.36 | 0 |
+| BA3_incr_focal_f1344 | 20 | 4005 | 1423 | 949 | 390 | 3.04 | 55.3 | 2.65 | 0.331 | 1.064 | 0.895 | 0.638 | 0.499 | 1220.77 | 0 |
+| BA4_incr_focal_k1_f1133 | 20 | 3648 | 1283 | 853 | 357 | 2.92 | 58.1 | 2.63 | 0.263 | 0.944 | 0.906 | 0.765 | 0.497 | 1168.97 | -0.0263606 |
+| BA4_incr_focal_k1_f1200 | 20 | 3643 | 1264 | 846 | 356 | 3.00 | 56.2 | 2.62 | 0.276 | 0.994 | 0.926 | 0.795 | 0.496 | 1167.12 | -0.0279331 |
+| BA4_incr_focal_k1_f1344 | 20 | 3691 | 1245 | 863 | 343 | 3.04 | 56.3 | 2.65 | 0.294 | 0.982 | 0.904 | 0.638 | 0.495 | 1167.67 | -0.0293948 |
+
+`focal` / `k1` are the final values after refinement. The `ba_log.csv` in each run lists every BA call: cameras (variable + constant), points, residuals, RMS before/after, iterations, termination, time, intrinsics, filter counts.
+
+## Findings
+
+* **Gauge and convergence:**
+  * Every one of the 28 BA calls per incremental run ends in `CONVERGENCE` and is applied.
+  * The old implementation hit `NO_CONVERGENCE` and had hardcoded anchors 6, 7.
+  * Global problems have exactly one constant camera (anchor 1), plus scale fixed through one translation component of anchor 2.
+* **Incremental vs. final-only BA:**
+  * Final-only BA (BA1) cleans the cloud: P95 drops from 2.16 to 1.05 px and reliable statue points rise from 195 to 347.
+  * It can't improve registration, which happened beforehand: the PnP ratio stays 0.835 / 0.612.
+  * Incremental BA raises the PnP inlier ratio to about 0.90 mean / 0.74–0.80 min, so new images register against a refined map.
+* **Self-calibration:**
+  * Without intrinsics refinement (BA2), the result still depends strongly on the starting focal length: 2,606–5,425 landmarks and 957–2,046 reliable for starts 1133–1344.
+  * Refining f (BA3) converges to 1213–1221 px from all three starts.
+  * Refining f + k1 (BA4) converges to **f = 1167–1169 px, k1 = −0.026 … −0.029** from all three starts. Landmark counts then agree within 1.3%, and reliable-statue counts are 343–357.
+* **Why f + k1 is the default:**
+  * f and k1 are correlated. Ignoring barrel distortion inflates the apparent focal length.
+  * With k1 modelled, f lands within 3% of the EXIF value (1133 px).
+  * k1 matches the independent Essential-matrix sweep (−0.02).
+  * Its reprojection error is lowest (P95 0.94–0.99 px).
+  * BA3 keeps somewhat more reliable points (1419–1490 vs 1245–1283), so the choice rests on physical consistency, not on counts.
+* **Outlier filtering:**
+  * The 4 px observation filter never fired: every observation was already within 4 px after PnP (4 px) and triangulation (3 px).
+  * All removals come from the 1° angle filter. Weakly constrained two-view points slide in depth once cameras are refined.
+  * Fewer landmarks with a higher reliable fraction is the intended result: 27% reliable without BA, 35% with BA4.
+* **Determinism:**
+  * With multiple Ceres threads, repeated runs differ slightly (landmarks ±0.1%, but the worst-image PnP ratio 0.69 ↔ 0.76).
+  * `--ba-threads 1` (default) is bit-reproducible.
+* **Cost:** about 12 s of BA in total for 20 images, single-threaded.

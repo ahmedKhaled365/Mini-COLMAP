@@ -162,7 +162,10 @@ Vec3b Diagnostics::landmarkColor(
         if (img.image.empty())
             continue;
 
-        const Point2f &pt = img.keypoints[obs.keypointId].pt;
+        // Sample the photograph at the detected (distorted) position
+        const Point2f &pt = img.rawPoints.empty()
+                                ? img.keypoints[obs.keypointId].pt
+                                : img.rawPoints[obs.keypointId];
         int x = clamp(cvRound(pt.x), 0, img.image.cols - 1);
         int y = clamp(cvRound(pt.y), 0, img.image.rows - 1);
 

@@ -14,6 +14,11 @@ struct ImageData {
     vector<KeyPoint> keypoints;
     Mat descriptors;
 
+    // Original (distorted) keypoint positions as detected. keypoints[i].pt
+    // holds the undistorted position under the current intrinsics, so all
+    // geometric stages can use the pinhole model K[R|t].
+    vector<Point2f> rawPoints;
+
     Mat R, t;
 
     bool registered = false;
