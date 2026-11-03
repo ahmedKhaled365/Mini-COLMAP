@@ -73,14 +73,11 @@ vector<ImageData> loadImages(
     return images;
 }
 
-
 // --------------------------------------------------
 // 3. Estimate Camera Intrinsics
 // --------------------------------------------------
 
 Mat createCameraMatrix(const vector<ImageData> &images) {
-    if (images.size() < 2)
-        throw runtime_error("At least 2 images required");
 
     const Size imageSize = images[0].image.size();
 
@@ -89,9 +86,7 @@ Mat createCameraMatrix(const vector<ImageData> &images) {
             throw runtime_error("Different image resolutions");
     }
 
-    double W = imageSize.width;
-    double H = imageSize.height;
-    double f = 0.7 * W;
+    double W = imageSize.width, H = imageSize.height, f = 0.7 * W;
 
     return (Mat_<double>(3, 3) <<
             f, 0, W / 2.0,
@@ -110,6 +105,7 @@ vector<PairMatch> matchImagePairs(
     const vector<ImageData> &images,
     FeatureMatcher &matcher
 ) {
+    /// vector contains all the matches between all images.
     vector<PairMatch> verifiedPairs;
 
     const int MATCH_WINDOW = 8;

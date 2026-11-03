@@ -33,7 +33,7 @@ vector<DMatch> FeatureMatcher::match(
         2
     );
 
-    constexpr float ratio = 0.75f;
+    const float ratio = 0.75f;
 
     vector<int> reverseBest(
         img2.descriptors.rows,
