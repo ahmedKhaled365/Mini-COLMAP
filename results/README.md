@@ -70,9 +70,9 @@ PLY / PNG / log files are local only (git-ignored); the reports and CSVs are com
 Run from `cmake-build-*/`:
 
 ```
-Mini-COLMAP.exe --focal 1344 --init legacy --out ../results/L_legacy_new_pose_f1344
-Mini-COLMAP.exe --focal 1200 --out ../results/P_parallax_f1200      # = current default
-Mini-COLMAP.exe --focal 1133 --pair 1 2 --out ../results/AB_f1133_pair1-2
+Mini-COLMAP.exe --ba none --focal 1344 --init legacy --out ../results/L_legacy_new_pose_f1344
+Mini-COLMAP.exe --ba none --focal 1200 --out ../results/P_parallax_f1200
+Mini-COLMAP.exe --ba none --focal 1133 --pair 1 2 --out ../results/AB_f1133_pair1-2   # Phase 1 code: git checkout f982ca4
 Mini-COLMAP.exe --focal-sweep --out ../results/calib_sweep_20img
 ```
 
@@ -142,3 +142,14 @@ Baseline B0 and the `A_*` / `AB_*` runs were made with the Phase 1 commit (diagn
   * With multiple Ceres threads, repeated runs differ slightly (landmarks ±0.1%, but the worst-image PnP ratio 0.69 ↔ 0.76).
   * `--ba-threads 1` (default) is bit-reproducible.
 * **Cost:** about 12 s of BA in total for 20 images, single-threaded.
+
+## Reproduce (Phase 3)
+
+```
+Mini-COLMAP.exe --out ../results/BA4_incr_focal_k1_f1200                       # = current default
+Mini-COLMAP.exe --focal 1133 --out ../results/BA4_incr_focal_k1_f1133
+Mini-COLMAP.exe --no-refine-k1 --out ../results/BA3_incr_focal_f1200
+Mini-COLMAP.exe --no-refine-focal --no-refine-k1 --out ../results/BA2_incremental_f1200
+Mini-COLMAP.exe --ba final --no-refine-focal --no-refine-k1 --out ../results/BA1_final
+python ../tools/compare_runs.py BA1_final BA4_incr_focal_k1_f1200              # from results/
+```
