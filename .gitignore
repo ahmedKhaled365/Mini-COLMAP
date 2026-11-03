@@ -7,3 +7,6 @@ build/
 CMakeFiles/
 CMakeCache.txt
 *.ply
+# Run outputs (reports and CSVs are kept, heavy files are not)
+results/**/*.png
+results/**/*.log

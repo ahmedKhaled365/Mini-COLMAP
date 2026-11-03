@@ -39,6 +39,7 @@ add_executable(Mini-COLMAP
         src/Triangulation.cpp
         src/Reconstruction.cpp
         src/BundleAdjuster.cpp
+        src/Diagnostics.cpp
 )
 
 # Compiler options

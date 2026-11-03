@@ -9,6 +9,9 @@
 #include "Geometry.h"
 #include "Triangulation.h"
 #include "Reconstruction.h"
+#include "Diagnostics.h"
+
+#include <filesystem>
 
 using namespace std;
 using namespace cv;
@@ -20,12 +23,90 @@ using namespace cv;
 vector<string> IMAGE_PATHS = {};
 
 const bool VISUALIZE = false;
-const int MAX_FEATURES = 3500;
-const int MAX_IMAGES = 20;
 const int MIN_INITIAL_POINTS = 15;
-const bool USE_FIXED_INITIAL_PAIR = false;
-const int INITIAL_ID1 = 6;
-const int INITIAL_ID2 = 7;
+
+// Run configuration. The defaults reproduce the original pipeline;
+// every value can be overridden from the command line so experiments
+// are reproducible (see parseArguments).
+struct RunConfig {
+    string dataDir = "../data/horse";
+    string outDir = "../results/latest";
+    int maxImages = 20;
+    int maxFeatures = 3500;
+
+    // Focal length in pixels. <= 0 means 0.7 * image width (original guess).
+    double focalPx = 0;
+
+    bool useFixedInitialPair = false;
+    int initialId1 = 6;
+    int initialId2 = 7;
+
+    // Diagnostics-only mode: sweep focal lengths and exit.
+    bool focalSweep = false;
+};
+
+RunConfig CONFIG;
+
+void printUsage() {
+    cout << "Usage: Mini-COLMAP [options]\n"
+            << "  --data DIR         image folder (default ../data/horse)\n"
+            << "  --out DIR          output folder (default ../results/latest)\n"
+            << "  --images N         number of images to use (default 20)\n"
+            << "  --features N       SIFT features per image (default 3500)\n"
+            << "  --focal F          focal length in pixels (default 0.7 * width)\n"
+            << "  --pair I J         force the initial pair (zero-based ids)\n"
+            << "  --focal-sweep      only run the focal-length sweep\n";
+}
+
+void parseArguments(int argc, char **argv) {
+    for (int i = 1; i < argc; i++) {
+        string arg = argv[i];
+
+        auto next = [&]() -> string {
+            if (i + 1 >= argc)
+                throw runtime_error("Missing value for " + arg);
+            return argv[++i];
+        };
+
+        if (arg == "--data") CONFIG.dataDir = next();
+        else if (arg == "--out") CONFIG.outDir = next();
+        else if (arg == "--images") CONFIG.maxImages = stoi(next());
+        else if (arg == "--features") CONFIG.maxFeatures = stoi(next());
+        else if (arg == "--focal") CONFIG.focalPx = stod(next());
+        else if (arg == "--pair") {
+            CONFIG.useFixedInitialPair = true;
+            CONFIG.initialId1 = stoi(next());
+            CONFIG.initialId2 = stoi(next());
+        } else if (arg == "--focal-sweep") CONFIG.focalSweep = true;
+        else if (arg == "--help" || arg == "-h") {
+            printUsage();
+            exit(0);
+        } else {
+            printUsage();
+            throw runtime_error("Unknown argument: " + arg);
+        }
+    }
+}
+
+string configDescription(const Mat &K) {
+    ostringstream os;
+    os << "Mini-COLMAP run\n"
+            << "  data: " << CONFIG.dataDir << '\n'
+            << "  images: " << CONFIG.maxImages << '\n'
+            << "  features: " << CONFIG.maxFeatures << '\n'
+            << "  focal: " << K.at<double>(0, 0)
+            << " px (cx " << K.at<double>(0, 2)
+            << ", cy " << K.at<double>(1, 2) << ")\n"
+            << "  initial pair: "
+            << (CONFIG.useFixedInitialPair
+                    ? to_string(CONFIG.initialId1) + "-" + to_string(CONFIG.initialId2)
+                    : string("automatic")) << '\n';
+    return os.str();
+}
+
+string outPath(const string &name) {
+    return (filesystem::path(CONFIG.outDir) / name).string();
+}
 
 
 // --------------------------------------------------
@@ -33,10 +114,10 @@ const int INITIAL_ID2 = 7;
 // --------------------------------------------------
 
 void lodaPaths() {
-    for (int i = 1; i <= MAX_IMAGES; i++) {
+    for (int i = 1; i <= CONFIG.maxImages; i++) {
         ostringstream filename;
 
-        filename << "../data/horse/"
+        filename << CONFIG.dataDir << "/"
                 << setw(5) << setfill('0') << i
                 << ".jpg";
 
@@ -86,7 +167,8 @@ Mat createCameraMatrix(const vector<ImageData> &images) {
             throw runtime_error("Different image resolutions");
     }
 
-    double W = imageSize.width, H = imageSize.height, f = 0.7 * W;
+    double W = imageSize.width, H = imageSize.height;
+    double f = CONFIG.focalPx > 0 ? CONFIG.focalPx : 0.7 * W;
 
     return (Mat_<double>(3, 3) <<
             f, 0, W / 2.0,
@@ -289,11 +371,36 @@ void showMatches(
 // --------------------------------------------------
 
 
+void saveCheckpoint(
+    Reconstruction &reconstruction,
+    const Diagnostics &diagnostics,
+    const Mat &K,
+    const string &name
+) {
+    const auto &images = reconstruction.getImages();
+    const auto &landmarks = reconstruction.getLandmarks();
+
+    auto report = diagnostics.analyze(images, landmarks, K);
+    Diagnostics::appendCheckpointCsv(report, outPath("checkpoints.csv"));
+    diagnostics.exportPoints(outPath(name + ".ply"), images, landmarks, K);
+
+    cout << fixed << setprecision(3)
+            << "[Checkpoint] " << name
+            << " | landmarks " << report.landmarks
+            << " | reproj median " << report.reprojection.median
+            << " P95 " << report.reprojection.p95
+            << " | track mean " << report.trackLength.mean
+            << " | angle median " << report.triAngle.median
+            << " | reliable " << report.reliableLandmarks << '\n';
+    cout.unsetf(ios::floatfield);
+}
+
 void registerRemainingImages(
     Reconstruction &reconstruction,
     vector<ImageData> &images,
     vector<PairMatch> &verifiedPairs,
-    Mat &K
+    Mat &K,
+    const Diagnostics &diagnostics
 ) {
     constexpr int MIN_CORRESPONDENCES = 10;
 
@@ -346,6 +453,10 @@ void registerRemainingImages(
                 K
             );
 
+            auto &log = reconstruction.getRegistrationLog();
+            if (!log.empty() && log.back().imageId == imageId)
+                log.back().newLandmarks = newPoints;
+
             int registeredCount = 0;
 
             for (const auto &img: images) {
@@ -354,16 +465,12 @@ void registerRemainingImages(
             }
 
             if (registeredCount == 5 ||
-                registeredCount == 10 ||
-                registeredCount == 15 ||
-                registeredCount == 20 ||
-                registeredCount == 30) {
-                string filename =
-                        "horse_" + to_string(registeredCount) + "_cameras.ply";
+                registeredCount % 10 == 0) {
+                ostringstream name;
+                name << "checkpoint_" << setw(3) << setfill('0')
+                        << registeredCount << "_cameras";
 
-                reconstruction.exportPLY(filename);
-
-                cout << "Checkpoint saved: " << filename << '\n';
+                saveCheckpoint(reconstruction, diagnostics, K, name.str());
             }
 
             cout << "Image " << imageId
@@ -408,9 +515,13 @@ void registerRemainingImages(
 // 8. Main
 // --------------------------------------------------
 
-int main() {
+int main(int argc, char **argv) {
     try {
-        FeatureExtractor extractor(MAX_FEATURES);
+        parseArguments(argc, argv);
+        filesystem::create_directories(CONFIG.outDir);
+        filesystem::remove(outPath("checkpoints.csv"));
+
+        FeatureExtractor extractor(CONFIG.maxFeatures);
         FeatureMatcher matcher;
         Geometry geometry;
         Triangulation triangulation;
@@ -431,16 +542,31 @@ int main() {
             matcher
         );
 
+        if (CONFIG.focalSweep) {
+            vector<double> focals;
+            for (double f = 900; f <= 1500; f += 50)
+                focals.push_back(f);
+            focals.push_back(1069.0); // EXIF, 35 mm-equivalent diagonal rule
+            focals.push_back(1132.6); // EXIF, 21 mm / 35.6 mm sensor width
+            focals.push_back(1344.0); // original 0.7 * width guess
+            sort(focals.begin(), focals.end());
+
+            Diagnostics::focalSweep(
+                images, verifiedPairs, focals, 3, outPath("focal_sweep.csv")
+            );
+            return 0;
+        }
+
 
         // Step 4: Find initial pair
         InitialPairResult initial;
 
-        if (USE_FIXED_INITIAL_PAIR) {
+        if (CONFIG.useFixedInitialPair) {
             for (int i = 0; i < static_cast<int>(verifiedPairs.size()); i++) {
                 const auto &pair = verifiedPairs[i];
 
-                if (pair.idx1 == INITIAL_ID1 &&
-                    pair.idx2 == INITIAL_ID2) {
+                if (pair.idx1 == CONFIG.initialId1 &&
+                    pair.idx2 == CONFIG.initialId2) {
                     initial.pairIndex = i;
 
                     initial.pose = geometry.estimateInitialPose(
@@ -506,30 +632,53 @@ int main() {
             );
         }
 
+        Diagnostics diagnostics;
+        saveCheckpoint(reconstruction, diagnostics, K, "checkpoint_002_cameras");
+
         // Step 6: Register remaining images
         registerRemainingImages(
             reconstruction,
             images,
             verifiedPairs,
-            K
+            K,
+            diagnostics
         );
 
         reconstruction.printTrackStatistics();
-        reconstruction.exportPLY("horse_all.ply");
 
-        reconstruction.exportFilteredPLY(
-            "horse_3plus_views.ply",
-            3
+        // Step 7: Diagnostics and exports (all written to CONFIG.outDir)
+        const auto &landmarks = reconstruction.getLandmarks();
+        auto report = diagnostics.analyze(images, landmarks, K);
+
+        Diagnostics::printSummary(report, cout);
+
+        ostringstream header;
+        header << configDescription(K)
+                << "  selected initial pair: " << startingPair.idx1
+                << "-" << startingPair.idx2
+                << " | initial landmarks " << initial.landmarks.size() << '\n';
+
+        Diagnostics::writeReport(report, outPath("report.txt"), header.str());
+        Diagnostics::writeRegistrationCsv(
+            reconstruction.getRegistrationLog(), outPath("registration.csv")
         );
 
-        reconstruction.exportFilteredPLY(
-            "horse_4plus_views.ply",
-            4
+        diagnostics.exportPoints(outPath("points_all.ply"), images, landmarks, K, 2);
+        diagnostics.exportPoints(outPath("points_3plus.ply"), images, landmarks, K, 3);
+        diagnostics.exportPoints(outPath("points_4plus.ply"), images, landmarks, K, 4);
+        diagnostics.exportPoints(outPath("points_reliable.ply"), images, landmarks, K, 2, 1);
+        diagnostics.exportPoints(outPath("points_unreliable.ply"), images, landmarks, K, 2, 2);
+        diagnostics.exportCameras(outPath("cameras.ply"), images, landmarks, K, false);
+        diagnostics.exportCameras(outPath("scene_with_cameras.ply"), images, landmarks, K, true);
+        diagnostics.renderPreview(
+            outPath("preview.png"), images, landmarks, K,
+            "f=" + to_string(cvRound(K.at<double>(0, 0))) +
+            " init " + to_string(startingPair.idx1) + "-" + to_string(startingPair.idx2) +
+            " | " + to_string(landmarks.size()) + " landmarks, " +
+            to_string(report.reliableLandmarks) + " reliable"
         );
 
-        // Step 7: Export point cloud before Bundle Adjustment
-        if (!reconstruction.exportPLY("horse_before_BA.ply"))
-            throw runtime_error("Failed to export before-BA PLY");
+        cout << "\nOutputs written to: " << CONFIG.outDir << '\n';
 
         // Step 8: Run Bundle Adjustment
         cout << "\nStarting Bundle Adjustment...\n";
@@ -546,10 +695,6 @@ int main() {
         // } else {
         //     cerr << "Bundle Adjustment failed\n";
         // }
-
-        // Step 10: Export final point cloud
-        if (!reconstruction.exportPLY("horse_final.ply"))
-            throw runtime_error("Failed to export final PLY");
 
         cout << "\nTotal 3D Landmarks: "
                 << reconstruction.getLandmarkCount()

@@ -2,6 +2,7 @@
 
 #include "ImageData.h"
 #include "Triangulation.h"
+#include "Diagnostics.h"
 
 
 class Reconstruction {
@@ -9,6 +10,9 @@ private:
     vector<ImageData> &images;
     vector<Landmark> landmarks;
     vector<vector<int> > observationToLandmark;
+
+    // One entry per PnP registration attempt
+    vector<RegistrationRecord> registrationLog;
 
     struct CorrespondenceInfo {
         int landmarkId;
@@ -29,6 +33,18 @@ public:
 
     size_t getLandmarkCount() const {
         return landmarks.size();
+    }
+
+    const vector<Landmark> &getLandmarks() const {
+        return landmarks;
+    }
+
+    const vector<ImageData> &getImages() const {
+        return images;
+    }
+
+    vector<RegistrationRecord> &getRegistrationLog() {
+        return registrationLog;
     }
 
     bool exportFilteredPLY(

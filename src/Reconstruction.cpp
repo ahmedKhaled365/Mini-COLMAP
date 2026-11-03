@@ -344,7 +344,16 @@ bool Reconstruction::registerImage(
         correspondenceInfo
     );
 
-    if (points3D.size() < 10 or points2D.size() != points3D.size()) return false;
+    RegistrationRecord record;
+    record.imageId = imageId;
+    record.attempt = static_cast<int>(registrationLog.size());
+    record.correspondences = static_cast<int>(points3D.size());
+
+    if (points3D.size() < 10 or points2D.size() != points3D.size()) {
+        record.reason = "too_few_correspondences";
+        registrationLog.push_back(record);
+        return false;
+    }
 
     /// calculating the camera pose to the new image.
     Mat rvec, tvec, inliers;
@@ -370,14 +379,43 @@ bool Reconstruction::registerImage(
             << (points3D.empty() ? 0.0 : 100.0 * inliers.total() / points3D.size())
             << "%" << endl;
 
-    if (!res)
+    record.inliers = static_cast<int>(inliers.total());
+    record.inlierRatio = static_cast<double>(inliers.total()) / points3D.size();
+
+    if (!res) {
+        record.reason = "pnp_failed";
+        registrationLog.push_back(record);
         return false;
+    }
+
+    // Reprojection RMS of the PnP inliers (diagnostics only)
+    if (!inliers.empty()) {
+        vector<Point3f> inlier3D;
+        vector<Point2f> inlier2D, projected;
+
+        for (int i = 0; i < inliers.rows; i++) {
+            inlier3D.push_back(points3D[inliers.at<int>(i, 0)]);
+            inlier2D.push_back(points2D[inliers.at<int>(i, 0)]);
+        }
+
+        projectPoints(inlier3D, rvec, tvec, K, noArray(), projected);
+
+        double sumSq = 0;
+        for (size_t i = 0; i < projected.size(); i++) {
+            Point2f d = projected[i] - inlier2D[i];
+            sumSq += d.dot(d);
+        }
+        record.inlierRms = sqrt(sumSq / projected.size());
+    }
 
     double inlierRatio =
             static_cast<double>(inliers.total()) / points3D.size();
 
-    if (inliers.total() < 20 || inlierRatio < 0.20)
+    if (inliers.total() < 20 || inlierRatio < 0.20) {
+        record.reason = "inlier_threshold";
+        registrationLog.push_back(record);
         return false;
+    }
 
     Mat R;
     Rodrigues(rvec, R);
@@ -415,6 +453,11 @@ bool Reconstruction::registerImage(
     }
 
     cout << "number of added observations: " << countnumberofaddedobservations << '\n';
+
+    record.addedObservations = countnumberofaddedobservations;
+    record.registered = true;
+    record.reason = "ok";
+    registrationLog.push_back(record);
 
     return true;
 }
