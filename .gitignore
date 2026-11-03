@@ -1,0 +1,9 @@
+cmake-build-*/
+build/
+.idea/
+*.exe
+*.o
+*.obj
+CMakeFiles/
+CMakeCache.txt
+*.ply
