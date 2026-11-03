@@ -9,6 +9,14 @@ struct Observation {
     int keypointId;
 };
 
+// Statistics of one two-view triangulation, measured before the
+// triangulation-angle filter so that weak-parallax pairs are visible.
+struct TwoViewStats {
+    int candidates = 0;   // input correspondences
+    int triangulated = 0; // positive depth + good reprojection
+    double medianAngle = 0; // over triangulated points [deg]
+};
+
 struct Landmark {
     Point3d position;
     vector<Observation> observations;
@@ -20,7 +28,8 @@ public:
         ImageData &img1,
         ImageData &img2,
         PoseResult &pose,
-        Mat &K
+        Mat &K,
+        TwoViewStats *stats = nullptr
     );
 
     static bool hasPositiveDepth(

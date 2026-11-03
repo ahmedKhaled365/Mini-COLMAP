@@ -41,11 +41,19 @@ PoseResult Geometry::estimateInitialPose(
         throw runtime_error("Failed to calculate Essential Matrix");
     }
 
+    // The 5-point solver may return several stacked solutions; use the best one.
+    if (essential.rows > 3)
+        essential = essential.rowRange(0, 3).clone();
+
     PoseResult result;
+    result.essentialInliers = countNonZero(essentialMask);
 
+    // Pose from the Essential Matrix. The standard overload is used: the
+    // former variant with distanceThresh = 1e6 counted points at infinity
+    // as cheirality inliers, which made near-zero-baseline pairs look strong.
+    // Cheirality, reprojection and parallax are enforced afterwards by
+    // Triangulation::triangulate on every E-RANSAC inlier.
     Mat poseMask = essentialMask.clone();
-
-    Mat triangulatedPoints;
 
     int inliers = recoverPose(
         essential,
@@ -54,33 +62,26 @@ PoseResult Geometry::estimateInitialPose(
         K,
         result.R,
         result.t,
-        1e6,
-        poseMask,
-        triangulatedPoints
+        poseMask
     );
-
-    cout << "\n[Initial Pose Debug]\n";
-    cout << "Pair: " << img1.id
-         << " <-> " << img2.id << '\n';
-
-    cout << "Input Matches: "
-         << matches.size() << '\n';
-
-    cout << "Essential RANSAC Inliers: "
-         << countNonZero(essentialMask) << '\n';
-
-    cout << "RecoverPose Inliers: "
-         << inliers << '\n';
 
     if (inliers < 15) {
         throw runtime_error("Not enough inliers for initial pose");
     }
 
-    for (int i = 0; i < matches.size(); i++) {
-        if (poseMask.at<uchar>(i)) {
+    for (int i = 0; i < static_cast<int>(matches.size()); i++) {
+        if (essentialMask.at<uchar>(i)) {
             result.inlierMatches.push_back(matches[i]);
         }
     }
+
+    // Homography test: a pair explained almost as well by a homography is
+    // rotation-dominated or planar, so its relative translation is unreliable.
+    Mat homographyMask;
+    Mat H = findHomography(points1, points2, RANSAC, 2.0, homographyMask, 2000, 0.999);
+
+    if (!H.empty() && !homographyMask.empty())
+        result.homographyInliers = countNonZero(homographyMask);
 
     return result;
 }

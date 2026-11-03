@@ -34,8 +34,19 @@ struct RunConfig {
     int maxImages = 20;
     int maxFeatures = 3500;
 
-    // Focal length in pixels. <= 0 means 0.7 * image width (original guess).
-    double focalPx = 0;
+    // Focal length in pixels. <= 0 means 0.7 * image width (original guess,
+    // 1344 px). EXIF (Sony A7S II, 21 mm, 35.6 mm sensor width) gives
+    // ~1133 px; the Essential-matrix sweep and the 20-image A/B runs both
+    // favour ~1200 px (see results/README.md), so that is the default here.
+    double focalPx = 1200;
+
+    // Initial pair selection: "parallax" (default) or "legacy"
+    string initMode = "parallax";
+    double maxHomographyRatio = 0.8; // reject if H inliers / E inliers is above
+    double minInitAngle = 4.0;       // deg, minimum median triangulation angle
+    double targetInitAngle = 8.0;    // deg, angle at which parallax stops adding score
+    int minInitLandmarks = 100;
+    double minInitTriangulatedRatio = 0.9; // triangulated / E inliers
 
     bool useFixedInitialPair = false;
     int initialId1 = 6;
@@ -53,8 +64,11 @@ void printUsage() {
             << "  --out DIR          output folder (default ../results/latest)\n"
             << "  --images N         number of images to use (default 20)\n"
             << "  --features N       SIFT features per image (default 3500)\n"
-            << "  --focal F          focal length in pixels (default 0.7 * width)\n"
+            << "  --focal F          focal length in pixels (default 1200; <= 0 uses 0.7 * width)\n"
             << "  --pair I J         force the initial pair (zero-based ids)\n"
+            << "  --init MODE        initial pair selection: parallax | legacy\n"
+            << "  --min-init-angle D minimum median triangulation angle [deg] (default 4)\n"
+            << "  --max-h-ratio R    maximum homography / essential inlier ratio (default 0.8)\n"
             << "  --focal-sweep      only run the focal-length sweep\n";
 }
 
@@ -77,7 +91,10 @@ void parseArguments(int argc, char **argv) {
             CONFIG.useFixedInitialPair = true;
             CONFIG.initialId1 = stoi(next());
             CONFIG.initialId2 = stoi(next());
-        } else if (arg == "--focal-sweep") CONFIG.focalSweep = true;
+        } else if (arg == "--init") CONFIG.initMode = next();
+        else if (arg == "--min-init-angle") CONFIG.minInitAngle = stod(next());
+        else if (arg == "--max-h-ratio") CONFIG.maxHomographyRatio = stod(next());
+        else if (arg == "--focal-sweep") CONFIG.focalSweep = true;
         else if (arg == "--help" || arg == "-h") {
             printUsage();
             exit(0);
@@ -100,7 +117,12 @@ string configDescription(const Mat &K) {
             << "  initial pair: "
             << (CONFIG.useFixedInitialPair
                     ? to_string(CONFIG.initialId1) + "-" + to_string(CONFIG.initialId2)
-                    : string("automatic")) << '\n';
+                    : "automatic (" + CONFIG.initMode + ")") << '\n'
+            << "  init gates: H/E <= " << CONFIG.maxHomographyRatio
+            << ", median angle >= " << CONFIG.minInitAngle
+            << " deg, landmarks >= " << CONFIG.minInitLandmarks
+            << ", triangulated/E >= " << CONFIG.minInitTriangulatedRatio
+            << ", target angle " << CONFIG.targetInitAngle << " deg\n";
     return os.str();
 }
 
@@ -251,18 +273,26 @@ InitialPairResult selectInitialPair(
     vector<PairMatch> &verifiedPairs,
     Mat &K,
     Geometry &geometry,
-    Triangulation &triangulation
+    Triangulation &triangulation,
+    vector<InitCandidateRecord> &records
 ) {
-    InitialPairResult best;
-
     const int MAX_CANDIDATES = 100;
     const int MIN_INITIAL_MATCHES = 100;
 
-    // Create an index list for all verified pairs
+    struct Candidate {
+        InitCandidateRecord record;
+        int pairIndex;
+        PoseResult pose;
+        vector<Landmark> landmarks;
+    };
+
+    vector<Candidate> candidates;
+
+    // Iterate in order of verified match count (iteration order only;
+    // the match count is not used for the final decision in parallax mode)
     vector<int> pairIndices(verifiedPairs.size());
     iota(pairIndices.begin(), pairIndices.end(), 0);
 
-    // Sort pairs by the number of geometrically verified matches
     sort(pairIndices.begin(), pairIndices.end(),
          [&](int a, int b) {
              return verifiedPairs[a].matches.size() >
@@ -275,7 +305,6 @@ InitialPairResult selectInitialPair(
         static_cast<int>(pairIndices.size())
     );
 
-    // Evaluate only the strongest candidate pairs
     for (int k = 0; k < candidatesToTry; k++) {
         int pairIndex = pairIndices[k];
         const auto &pair = verifiedPairs[pairIndex];
@@ -283,56 +312,130 @@ InitialPairResult selectInitialPair(
         if (pair.matches.size() < MIN_INITIAL_MATCHES)
             continue;
 
+        Candidate c;
+        c.pairIndex = pairIndex;
+        c.record.idx1 = pair.idx1;
+        c.record.idx2 = pair.idx2;
+        c.record.fInliers = static_cast<int>(pair.matches.size());
+
         try {
-            // Estimate relative camera pose
-            auto pose = geometry.estimateInitialPose(
+            c.pose = geometry.estimateInitialPose(
                 images[pair.idx1],
                 images[pair.idx2],
                 pair.matches,
                 K
             );
 
-            if (pose.inlierMatches.size() < MIN_INITIAL_POINTS)
-                continue;
-
-            // Triangulate initial 3D landmarks
-            auto points = triangulation.triangulate(
+            TwoViewStats stats;
+            c.landmarks = triangulation.triangulate(
                 images[pair.idx1],
                 images[pair.idx2],
-                pose,
-                K
+                c.pose,
+                K,
+                &stats
             );
 
-            cout << "Pair " << pair.idx1
-                    << " <-> " << pair.idx2
-                    << " | RANSAC: " << pair.matches.size()
-                    << " | Pose: " << pose.inlierMatches.size()
-                    << " | Landmarks: " << points.size()
-                    << '\n';
-
-            // Keep the pair with the most valid 3D landmarks
-            if (points.size() > best.landmarks.size()) {
-                best.pairIndex = pairIndex;
-                best.pose = move(pose);
-                best.landmarks = move(points);
-            }
-        } catch (const cv::Exception &e) {
-            cerr << "Skipping pair "
-                    << pair.idx1 << " <-> " << pair.idx2
-                    << " | OpenCV error: " << e.what()
-                    << '\n';
-        } catch (const std::runtime_error &e) {
-            cerr << "Skipping pair "
-                    << pair.idx1 << " <-> " << pair.idx2
-                    << " | Reason: " << e.what()
-                    << '\n';
+            c.record.eInliers = c.pose.essentialInliers;
+            c.record.hInliers = c.pose.homographyInliers;
+            c.record.hOverE = c.pose.essentialInliers > 0
+                                  ? double(c.pose.homographyInliers) / c.pose.essentialInliers
+                                  : 1.0;
+            c.record.triangulated = stats.triangulated;
+            c.record.landmarks = static_cast<int>(c.landmarks.size());
+            c.record.medianAngle = stats.medianAngle;
+        } catch (const cv::Exception &) {
+            c.record.reason = "opencv_error";
+        } catch (const std::runtime_error &) {
+            c.record.reason = "pose_failed";
         }
+
+        candidates.push_back(move(c));
     }
 
-    if (best.pairIndex == -1 ||
-        best.landmarks.size() < MIN_INITIAL_POINTS) {
+    // Selection.
+    // legacy:   most surviving landmarks (original behaviour).
+    // parallax: reject rotation-dominated / planar pairs (a homography explains
+    //           the matches almost as well as the Essential Matrix) and pairs
+    //           with a weak median triangulation angle, then prefer
+    //           well-conditioned pairs:
+    //           score = landmarks * min(1, medianAngle / targetAngle).
+    //           If nothing passes, the angle gate is relaxed step by step.
+    int bestIndex = -1;
+    const bool legacy = CONFIG.initMode == "legacy";
+
+    for (double minAngle = CONFIG.minInitAngle;
+         bestIndex == -1 && minAngle >= 0.99;
+         minAngle *= 0.5) {
+        double bestScore = 0;
+
+        for (int i = 0; i < static_cast<int>(candidates.size()); i++) {
+            auto &r = candidates[i].record;
+
+            if (r.reason == "opencv_error" || r.reason == "pose_failed")
+                continue;
+
+            if (legacy) {
+                r.score = r.landmarks;
+                r.reason = "evaluated";
+            } else if (r.landmarks < CONFIG.minInitLandmarks) {
+                r.reason = "few_landmarks";
+                continue;
+            } else if (r.triangulated < CONFIG.minInitTriangulatedRatio * r.eInliers) {
+                // A correct pose places nearly all E inliers in front of both
+                // cameras with small reprojection error; a large deficit means
+                // the decomposition is ill-conditioned.
+                r.reason = "pose_inconsistent";
+                continue;
+            } else if (r.hOverE > CONFIG.maxHomographyRatio) {
+                r.reason = "homography_dominant";
+                continue;
+            } else if (r.medianAngle < minAngle) {
+                r.reason = "low_parallax";
+                continue;
+            } else {
+                r.score = r.landmarks * min(1.0, r.medianAngle / CONFIG.targetInitAngle);
+                r.reason = "passed";
+            }
+
+            if (r.score > bestScore) {
+                bestScore = r.score;
+                bestIndex = i;
+            }
+        }
+
+        if (legacy)
+            break;
+
+        if (bestIndex == -1)
+            cerr << "No initial pair passed with median angle >= " << minAngle
+                    << " deg, relaxing\n";
+    }
+
+    for (const auto &c: candidates)
+        records.push_back(c.record);
+
+    if (bestIndex == -1 ||
+        candidates[bestIndex].landmarks.size() < MIN_INITIAL_POINTS) {
         throw runtime_error("No suitable initial pair found");
     }
+
+    records[bestIndex].accepted = true;
+
+    const auto &r = candidates[bestIndex].record;
+    cout << fixed << setprecision(2)
+            << "[Init] " << (legacy ? "legacy" : "parallax")
+            << " | evaluated " << candidates.size()
+            << " | selected " << r.idx1 << "-" << r.idx2
+            << " | F " << r.fInliers << " E " << r.eInliers
+            << " H/E " << r.hOverE
+            << " | median angle " << r.medianAngle
+            << " | landmarks " << r.landmarks << '\n';
+    cout.unsetf(ios::floatfield);
+
+    InitialPairResult best;
+    best.pairIndex = candidates[bestIndex].pairIndex;
+    best.pose = move(candidates[bestIndex].pose);
+    best.landmarks = move(candidates[bestIndex].landmarks);
 
     return best;
 }
@@ -552,7 +655,9 @@ int main(int argc, char **argv) {
             sort(focals.begin(), focals.end());
 
             Diagnostics::focalSweep(
-                images, verifiedPairs, focals, 3, outPath("focal_sweep.csv")
+                images, verifiedPairs, focals,
+                {0.0, -0.02, -0.04, -0.06, -0.08, -0.12}, 3,
+                outPath("focal_sweep.csv")
             );
             return 0;
         }
@@ -591,12 +696,17 @@ int main(int argc, char **argv) {
                 initial.landmarks.size() < MIN_INITIAL_POINTS)
                 throw runtime_error("Fixed initial pair is invalid");
         } else {
+            vector<InitCandidateRecord> initRecords;
             initial = selectInitialPair(
                 images,
                 verifiedPairs,
                 K,
                 geometry,
-                triangulation
+                triangulation,
+                initRecords
+            );
+            Diagnostics::writeInitCandidatesCsv(
+                initRecords, outPath("init_candidates.csv")
             );
         }
 

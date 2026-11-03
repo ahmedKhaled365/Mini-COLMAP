@@ -8,6 +8,10 @@ struct PoseResult {
     Mat R;
     Mat t;
     vector<DMatch> inlierMatches;
+
+    // Two-view model statistics used for initial pair selection
+    int essentialInliers = 0;
+    int homographyInliers = 0;
 };
 
 class Geometry {

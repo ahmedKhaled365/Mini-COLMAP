@@ -810,11 +810,12 @@ void Diagnostics::focalSweep(
     const vector<ImageData> &images,
     const vector<PairMatch> &verifiedPairs,
     const vector<double> &focals,
+    const vector<double> &k1s,
     int minGap,
     const string &csvPath
 ) {
     ofstream file(csvPath);
-    file << "focal,pairs,mean_inlier_frac,median_inlier_frac,median_sampson_px\n";
+    file << "focal,k1,pairs,mean_inlier_frac,median_inlier_frac,median_sampson_px\n";
 
     cout << "\n========== FOCAL SWEEP ==========\n";
     cout << "Pairs with gap >= " << minGap << ", E-RANSAC threshold 1 px\n";
@@ -822,8 +823,10 @@ void Diagnostics::focalSweep(
     const double cx = images[0].image.cols / 2.0;
     const double cy = images[0].image.rows / 2.0;
 
+    for (double k1: k1s)
     for (double f: focals) {
         Mat K = (Mat_<double>(3, 3) << f, 0, cx, 0, f, cy, 0, 0, 1);
+        Mat dist = (Mat_<double>(1, 4) << k1, 0, 0, 0);
         const Matx33d Kinv = Matx33d(K).inv();
 
         vector<double> fractions, sampson;
@@ -836,6 +839,12 @@ void Diagnostics::focalSweep(
             for (const auto &m: pair.matches) {
                 p1.push_back(images[pair.idx1].keypoints[m.queryIdx].pt);
                 p2.push_back(images[pair.idx2].keypoints[m.trainIdx].pt);
+            }
+
+            // Remove radial distortion, keeping pixel units (P = K)
+            if (k1 != 0.0) {
+                undistortPoints(vector<Point2f>(p1), p1, K, dist, noArray(), K);
+                undistortPoints(vector<Point2f>(p2), p2, K, dist, noArray(), K);
             }
 
             Mat mask;
@@ -862,14 +871,15 @@ void Diagnostics::focalSweep(
         Stats fs = computeStats(fractions);
         Stats ss = computeStats(sampson);
 
-        cout << "f = " << setw(6) << f
+        cout << "k1 = " << setw(5) << k1
+                << " | f = " << setw(6) << f
                 << " | pairs " << fs.count
                 << " | mean inlier frac " << fixed << setprecision(4) << fs.mean
                 << " | median " << fs.median
                 << " | median Sampson " << ss.median << " px\n";
         cout.unsetf(ios::floatfield);
 
-        file << f << ',' << fs.count << ',' << fs.mean << ','
+        file << f << ',' << k1 << ',' << fs.count << ',' << fs.mean << ','
                 << fs.median << ',' << ss.median << '\n';
     }
 }

@@ -1,0 +1,55 @@
+Mini-COLMAP run
+  data: ../data/horse
+  images: 20
+  features: 3500
+  focal: 1069 px (cx 960, cy 540)
+  initial pair: automatic
+  selected initial pair: 4-8 | initial landmarks 524
+
+
+========== DIAGNOSTICS ==========
+Registered: 20 / 20 | Landmarks: 3715 | Observations: 10962 | Negative-depth obs: 0
+Reprojection [px]: mean 0.896 | median 0.625 | P95 2.632 | max 5.171 | RMS 1.234 (n=10962)
+Track length: mean 2.95 | 2-view 2209 | 3-view 618 | 4+ view 888
+Tri. angle [deg]: mean 3.93 | median 2.53 | P95 10.64 | max 49.07 | RMS 5.85 (n=3715)
+Angle bins <1/1-2/2-5/5-10/10-20/20+: 0 / 1426 / 1472 / 611 / 160 / 46
+Reliable landmarks: 749
+Object region: 1 landmarks (0 reliable) | reproj median 2.767 px
+Camera step CV: 1.052
+
+Track length histogram:
+  2 views: 2209
+  3 views: 618
+  4 views: 343
+  5 views: 234
+  6 views: 134
+  7 views: 100
+  8 views: 52
+  9 views: 22
+  10 views: 3
+
+LookAt point: [0.7272, -0.4528, 2.6773] | median camera distance: 3.1162
+Camera step: mean 0.7161 | median 0.6359 | P95 1.0758 | max 3.6124 | RMS 1.0395 (n=19)
+
+Per-camera reprojection:
+  image  obs     rms[px]   center
+      0    342     1.569   [-1.5580, 0.0460, 0.3995]
+      1    559     1.536   [-1.3950, 0.0424, 0.3927]
+      2    650     1.530   [-1.0719, 0.0091, 0.3683]
+      3    996     1.213   [-0.5073, -0.0284, 0.0364]
+      4   1143     0.610   [-0.0000, -0.0000, -0.0000]
+      5   1190     0.794   [0.6617, 0.0148, -0.2471]
+      6    924     0.825   [0.6907, 0.0466, -0.1769]
+      7    880     1.127   [0.7047, 0.0379, -0.1291]
+      8    868     0.620   [0.9781, -0.0097, -0.2080]
+      9    895     1.476   [1.5780, -0.1947, -0.3094]
+     10    806     1.449   [2.4879, -0.5473, -0.2130]
+     11    626     1.500   [3.5125, -0.6882, 0.0827]
+     12    360     1.619   [4.3889, -0.5938, 0.2451]
+     13    214     1.621   [5.3073, -0.8016, 0.4871]
+     14    161     1.682   [6.0635, -0.9001, 0.6808]
+     15    106     1.615   [2.4969, -0.6719, 1.2066]
+     16     66     2.202   [2.5997, -0.7489, 1.3137]
+     17     71     1.954   [2.4763, -0.7373, 1.0810]
+     18     60     1.867   [3.3472, -0.7680, 0.9884]
+     19     45     2.150   [3.8518, -0.8413, 0.7664]

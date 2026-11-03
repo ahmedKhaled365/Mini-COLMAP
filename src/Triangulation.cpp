@@ -94,9 +94,11 @@ vector<Landmark> Triangulation::triangulate(
     ImageData &img1,
     ImageData &img2,
     PoseResult &pose,
-    Mat &K
+    Mat &K,
+    TwoViewStats *stats
 ) {
     vector<Landmark> landmarks;
+    vector<double> angles;
 
     if (pose.inlierMatches.size() < 2)
         return landmarks;
@@ -182,6 +184,8 @@ vector<Landmark> Triangulation::triangulate(
 
         double angle = acos(cosine) * 180.0 / M_PI;
 
+        angles.push_back(angle);
+
         if (angle < 1.0)
             continue;
 
@@ -194,6 +198,15 @@ vector<Landmark> Triangulation::triangulate(
                 {img2.id, match.trainIdx}
             }
         });
+    }
+
+    if (stats) {
+        stats->candidates = static_cast<int>(pose.inlierMatches.size());
+        stats->triangulated = static_cast<int>(angles.size());
+        if (!angles.empty()) {
+            nth_element(angles.begin(), angles.begin() + angles.size() / 2, angles.end());
+            stats->medianAngle = angles[angles.size() / 2];
+        }
     }
 
     return landmarks;

@@ -184,10 +184,13 @@ public:
     // Mean Essential-matrix inlier fraction over verified pairs for each
     // candidate focal length. A correct focal length should explain
     // more of the F-verified correspondences with a calibrated model.
+    // Each k1 value undistorts the keypoints with a one-parameter radial
+    // model before fitting, to test for unmodeled lens distortion.
     static void focalSweep(
         const vector<ImageData> &images,
         const vector<PairMatch> &verifiedPairs,
         const vector<double> &focals,
+        const vector<double> &k1s,
         int minGap,
         const string &csvPath
     );

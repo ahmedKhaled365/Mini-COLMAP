@@ -1,0 +1,56 @@
+Mini-COLMAP run
+  data: ../data/horse
+  images: 20
+  features: 3500
+  focal: 1200 px (cx 960, cy 540)
+  initial pair: automatic
+  selected initial pair: 4-8 | initial landmarks 509
+
+
+========== DIAGNOSTICS ==========
+Registered: 20 / 20 | Landmarks: 5660 | Observations: 16219 | Negative-depth obs: 0
+Reprojection [px]: mean 0.869 | median 0.597 | P95 2.600 | max 5.189 | RMS 1.190 (n=16219)
+Track length: mean 2.87 | 2-view 3344 | 3-view 1170 | 4+ view 1146
+Tri. angle [deg]: mean 4.42 | median 2.84 | P95 13.30 | max 55.67 | RMS 6.47 (n=5660)
+Angle bins <1/1-2/2-5/5-10/10-20/20+: 0 / 1858 / 2267 / 1127 / 310 / 98
+Reliable landmarks: 1198
+Object region: 822 landmarks (208 reliable) | reproj median 0.749 px
+Camera step CV: 0.568
+
+Track length histogram:
+  2 views: 3344
+  3 views: 1170
+  4 views: 486
+  5 views: 260
+  6 views: 168
+  7 views: 126
+  8 views: 72
+  9 views: 30
+  10 views: 3
+  11 views: 1
+
+LookAt point: [0.3680, -0.6281, 7.3733] | median camera distance: 7.5881
+Camera step: mean 0.8492 | median 0.9809 | P95 1.4693 | max 1.5119 | RMS 0.9768 (n=19)
+
+Per-camera reprojection:
+  image  obs     rms[px]   center
+      0    407     1.838   [-1.6815, 0.0816, 0.3050]
+      1    599     1.828   [-1.4813, 0.0985, 0.2966]
+      2    727     1.538   [-1.1756, 0.0202, 0.2485]
+      3   1093     1.051   [-0.4644, 0.0245, 0.0023]
+      4   1120     0.638   [-0.0000, -0.0000, -0.0000]
+      5   1182     0.689   [0.6507, 0.0257, -0.2917]
+      6    898     0.911   [0.6782, 0.0562, -0.2157]
+      7    872     0.759   [0.6854, 0.0528, -0.1775]
+      8    843     0.531   [0.9702, 0.0030, -0.2421]
+      9    955     1.452   [1.5714, -0.1816, -0.3972]
+     10    869     1.460   [2.4912, -0.5220, -0.4126]
+     11    790     1.325   [3.5305, -0.6411, -0.0938]
+     12    547     1.388   [4.6326, -0.6743, 0.2604]
+     13    387     1.305   [5.6539, -0.7665, 1.0284]
+     14    377     1.518   [6.4260, -0.7824, 1.9413]
+     15    634     1.052   [6.6603, -1.0033, 3.3346]
+     16   1033     1.131   [6.9090, -1.0614, 4.6319]
+     17   1183     1.135   [7.0871, -1.1190, 5.7869]
+     18   1049     1.213   [7.2059, -1.2468, 7.2888]
+     19    654     1.381   [7.0857, -1.3123, 8.7517]
