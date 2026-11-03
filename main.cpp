@@ -73,6 +73,12 @@ struct RunConfig {
     string outputLevel = "standard";
     bool binaryPly = true;
 
+    // Track maintenance (Phase 4)
+    bool completeTracks = true;    // extend tracks via the correspondence graph
+    bool mergeTracks = false;      // merge landmarks linked by a correspondence
+    bool retriangulate = false;    // re-triangulate all registered pairs before global BA
+    double trackMaxError = 4.0;    // px, completion and merge reprojection limit
+
     // Diagnostics-only mode: sweep focal lengths and exit.
     bool focalSweep = false;
 };
@@ -98,6 +104,10 @@ void printUsage() {
             << "  --ba-threads N     Ceres threads (default 1 = reproducible, 0 = all)\n"
             << "  --output LEVEL     minimal | standard | full (default standard)\n"
             << "  --ascii-ply        write ASCII instead of binary PLY files\n"
+            << "  --[no-]complete-tracks  extend tracks through the correspondence graph\n"
+            << "  --[no-]merge-tracks     merge landmarks linked by a correspondence\n"
+            << "  --[no-]retriangulate    re-triangulate registered pairs before global BA\n"
+            << "  --track-max-error E completion / merge reprojection limit [px] (default 4)\n"
             << "  --ba-max-error E   post-BA observation filter [px] (default 4)\n"
             << "  --ba-min-angle D   post-BA triangulation angle filter [deg] (default 1)\n"
             << "  --focal-sweep      only run the focal-length sweep\n";
@@ -135,6 +145,13 @@ void parseArguments(int argc, char **argv) {
         else if (arg == "--ba-threads") CONFIG.baThreads = stoi(next());
         else if (arg == "--output") CONFIG.outputLevel = next();
         else if (arg == "--ascii-ply") CONFIG.binaryPly = false;
+        else if (arg == "--complete-tracks") CONFIG.completeTracks = true;
+        else if (arg == "--no-complete-tracks") CONFIG.completeTracks = false;
+        else if (arg == "--merge-tracks") CONFIG.mergeTracks = true;
+        else if (arg == "--no-merge-tracks") CONFIG.mergeTracks = false;
+        else if (arg == "--retriangulate") CONFIG.retriangulate = true;
+        else if (arg == "--no-retriangulate") CONFIG.retriangulate = false;
+        else if (arg == "--track-max-error") CONFIG.trackMaxError = stod(next());
         else if (arg == "--ba-max-error") CONFIG.filterMaxError = stod(next());
         else if (arg == "--ba-min-angle") CONFIG.filterMinAngle = stod(next());
         else if (arg == "--focal-sweep") CONFIG.focalSweep = true;
@@ -172,6 +189,10 @@ string configDescription(const Mat &K) {
             << " | huber " << CONFIG.huberScale
             << " | refine focal " << CONFIG.refineFocal
             << " | refine k1 " << CONFIG.refineK1 << '\n'
+            << "  tracks: complete " << CONFIG.completeTracks
+            << " | merge " << CONFIG.mergeTracks
+            << " | retriangulate " << CONFIG.retriangulate
+            << " | max error " << CONFIG.trackMaxError << " px\n"
             << "  post-BA filter: max error " << CONFIG.filterMaxError
             << " px, min angle " << CONFIG.filterMinAngle << " deg\n";
     return os.str();
@@ -555,14 +576,42 @@ void saveCheckpoint(
     cout.unsetf(ios::floatfield);
 }
 
-// Runs one bundle adjustment followed by outlier filtering and prints a
-// one-line summary. imageId < 0 means global BA.
+// Track completion and merging (whichever are enabled).
+// Returns {added observations, merges}.
+pair<int, int> maintainTracks(Reconstruction &reconstruction, const Mat &K) {
+    int completed = 0, merged = 0;
+
+    if (CONFIG.completeTracks)
+        completed = reconstruction.completeTracks(K, CONFIG.trackMaxError);
+
+    if (CONFIG.mergeTracks) {
+        merged = reconstruction.mergeTracks(K, CONFIG.trackMaxError);
+
+        // A merge can connect new keypoints to the track
+        if (merged > 0 && CONFIG.completeTracks)
+            completed += reconstruction.completeTracks(K, CONFIG.trackMaxError);
+    }
+
+    return {completed, merged};
+}
+
+// Runs one bundle adjustment followed by track maintenance and outlier
+// filtering, and prints a one-line summary. imageId < 0 means global BA,
+// which is preceded by re-triangulation when enabled.
 void runBundleAdjustment(
     Reconstruction &reconstruction,
     Mat &K,
     int imageId,
-    bool allowIntrinsics
+    bool allowIntrinsics,
+    const vector<PairMatch> &verifiedPairs
 ) {
+    int retriangulated = 0;
+
+    if (imageId < 0 && CONFIG.retriangulate) {
+        retriangulated = reconstruction.retriangulate(verifiedPairs, K);
+        maintainTracks(reconstruction, K);
+    }
+
     int registered = 0;
     for (const auto &img: reconstruction.getImages()) {
         if (img.registered)
@@ -592,8 +641,11 @@ void runBundleAdjustment(
     }
 
     auto &entry = reconstruction.getBALog().back();
+    pair<int, int> tracks = {0, 0};
 
     if (result.applied) {
+        tracks = maintainTracks(reconstruction, K);
+
         auto [observations, removed] = reconstruction.filterLandmarks(
             {}, K, CONFIG.filterMaxError, CONFIG.filterMinAngle
         );
@@ -609,6 +661,9 @@ void runBundleAdjustment(
             << " | " << (entry.applied ? "applied" : "REJECTED: " + entry.reason)
             << " | filtered obs " << entry.filteredObservations
             << ", landmarks " << entry.removedLandmarks;
+    if (CONFIG.completeTracks || CONFIG.mergeTracks || retriangulated > 0)
+        cout << " | completed " << tracks.first << ", merged " << tracks.second
+                << ", retriangulated " << retriangulated;
     if (options.refineFocal || options.refineK1)
         cout << " | f " << entry.focalAfter << " k1 " << setprecision(4) << entry.k1After;
     cout << '\n';
@@ -675,6 +730,8 @@ void registerRemainingImages(
                 K
             );
 
+            maintainTracks(reconstruction, K);
+
             auto &log = reconstruction.getRegistrationLog();
             if (!log.empty() && log.back().imageId == imageId)
                 log.back().newLandmarks = newPoints;
@@ -687,10 +744,10 @@ void registerRemainingImages(
             }
 
             if (CONFIG.baMode == "incremental") {
-                runBundleAdjustment(reconstruction, K, imageId, false);
+                runBundleAdjustment(reconstruction, K, imageId, false, verifiedPairs);
 
                 if (registeredCount >= ceil(lastGlobal * CONFIG.globalBaRatio)) {
-                    runBundleAdjustment(reconstruction, K, -1, true);
+                    runBundleAdjustment(reconstruction, K, -1, true, verifiedPairs);
                     lastGlobal = registeredCount;
                 }
             }
@@ -862,6 +919,8 @@ int main(int argc, char **argv) {
             initial.landmarks
         );
 
+        reconstruction.buildCorrespondenceGraph(verifiedPairs);
+
         if (VISUALIZE) {
             showMatches(
                 images[startingPair.idx1],
@@ -874,7 +933,7 @@ int main(int argc, char **argv) {
 
         // Refine the initial two-view reconstruction (gauge: anchor pair)
         if (CONFIG.baMode == "incremental")
-            runBundleAdjustment(reconstruction, K, -1, false);
+            runBundleAdjustment(reconstruction, K, -1, false, verifiedPairs);
 
         DiagnosticsConfig diagnosticsConfig;
         diagnosticsConfig.binaryPly = CONFIG.binaryPly;
@@ -892,7 +951,7 @@ int main(int argc, char **argv) {
 
         // Step 7: Final global Bundle Adjustment
         if (CONFIG.baMode == "incremental" || CONFIG.baMode == "final")
-            runBundleAdjustment(reconstruction, K, -1, true);
+            runBundleAdjustment(reconstruction, K, -1, true, verifiedPairs);
 
         BundleAdjuster::writeLog(reconstruction.getBALog(), outPath("ba_log.csv"));
 
@@ -912,6 +971,20 @@ int main(int argc, char **argv) {
                 << "  intrinsics: initial f " << initialFocal
                 << " px | final f " << K.at<double>(0, 0)
                 << " px | final k1 " << reconstruction.getK1() << '\n';
+
+        const auto &trackStats = reconstruction.getTrackStats();
+        const int violations = reconstruction.countInvariantViolations();
+
+        header << "  track maintenance: completed observations "
+                << trackStats.completedObservations
+                << " | merged landmarks " << trackStats.mergedLandmarks
+                << " | retriangulated landmarks " << trackStats.retriangulatedLandmarks
+                << " | invariant violations " << violations << '\n';
+
+        cout << "Track maintenance: completed " << trackStats.completedObservations
+                << " | merged " << trackStats.mergedLandmarks
+                << " | retriangulated " << trackStats.retriangulatedLandmarks
+                << " | invariant violations " << violations << '\n';
 
         Diagnostics::writeReport(report, outPath("report.txt"), header.str());
         Diagnostics::writeRegistrationCsv(

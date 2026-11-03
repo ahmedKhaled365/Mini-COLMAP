@@ -200,3 +200,78 @@ python ../tools/compare_runs.py BA1_final BA4_incr_focal_k1_f1200              #
   * camera step CV falls 0.50 → 0.37 → 0.32.
 * The 20-camera checkpoint inside the 35/50-image runs (3,644 landmarks) reproduces the standalone 20-image result (3,643): adding images doesn't disturb the early reconstruction.
 * **Time:** 87 s for 35 images and 111 s for 50, both dominated by feature extraction and matching. BA takes 4–6 s.
+
+---
+
+# Phase 4: Track completion, merging, re-triangulation
+
+**New track-maintenance operations:**
+* **Correspondence graph:** built once from the verified pairs.
+* **Completion** (`--complete-tracks`, now the default):
+  * An unassigned keypoint matched to an observation of a landmark joins that landmark if the landmark has no observation in that image yet and it reprojects within 4 px.
+  * It's transitive: newly added observations are searched too.
+  * Runs after triangulation and after every applied BA, before the outlier filter.
+* **Merging** (`--merge-tracks`, off):
+  * Two landmarks linked by a correspondence are merged if they share no image and their track-length-weighted average reprojects within 4 px in every observation.
+* **Re-triangulation** (`--retriangulate`, off):
+  * Before every global BA, all registered pairs go through the same two-view creation logic and thresholds again.
+* **Invariant check after every run:**
+  * no keypoint in more than one landmark;
+  * no two observations of one landmark in the same image;
+  * index and landmarks in agreement.
+  * **0 violations in every run.**
+
+T0 runs reproduce the Phase 3 / expansion runs exactly. T1b is completion with a 3 px limit.
+
+| run | reg | landmarks | reliable | object | object_rel | track | two_view_pct | angle_med | rp_med | rp_p95 | pnp_mean | pnp_min | step_cv | focal | k1 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| T0_n20 | 20 | 3643 | 1264 | 846 | 356 | 3.00 | 56.2 | 2.62 | 0.276 | 0.994 | 0.926 | 0.795 | 0.496 | 1167.12 | -0.0279331 |
+| T1_complete_n20 | 20 | 3501 | 1542 | 788 | 429 | 3.94 | 33.8 | 2.99 | 0.377 | 1.184 | 0.928 | 0.786 | 0.497 | 1167.43 | -0.0267202 |
+| T1b_complete3px_n20 | 20 | 3503 | 1524 | 777 | 429 | 3.92 | 34.0 | 2.90 | 0.373 | 1.161 | 0.925 | 0.676 | 0.497 | 1167.12 | -0.0263999 |
+| T2_merge_n20 | 20 | 3469 | 1549 | 782 | 432 | 3.97 | 33.3 | 3.00 | 0.381 | 1.191 | 0.929 | 0.801 | 0.497 | 1167.9 | -0.0265744 |
+| T3_retri_n20 | 20 | 3523 | 1548 | 784 | 432 | 3.97 | 33.4 | 2.96 | 0.382 | 1.197 | 0.910 | 0.686 | 0.497 | 1168.38 | -0.0261875 |
+| T0_n35 | 35 | 6423 | 2297 | 1667 | 634 | 2.97 | 56.1 | 3.19 | 0.289 | 1.052 | 0.908 | 0.792 | 0.374 | 1164.44 | -0.0300325 |
+| T1_complete_n35 | 35 | 6125 | 2807 | 1600 | 753 | 3.86 | 34.4 | 3.49 | 0.393 | 1.284 | 0.903 | 0.776 | 0.376 | 1168.39 | -0.0260856 |
+| T2_merge_n35 | 35 | 6100 | 2814 | 1531 | 732 | 3.88 | 34.5 | 3.54 | 0.396 | 1.288 | 0.905 | 0.773 | 0.377 | 1168.09 | -0.0264312 |
+| T3_retri_n35 | 35 | 6210 | 2802 | 1559 | 728 | 3.85 | 35.0 | 3.50 | 0.396 | 1.282 | 0.900 | 0.779 | 0.378 | 1167.48 | -0.0264446 |
+| T0_n50 | 50 | 8321 | 3006 | 1985 | 673 | 2.96 | 56.7 | 3.33 | 0.295 | 1.075 | 0.902 | 0.771 | 0.323 | 1165.98 | -0.029172 |
+| T1_complete_n50 | 50 | 8024 | 3763 | 1935 | 840 | 3.82 | 34.8 | 3.67 | 0.404 | 1.321 | 0.894 | 0.776 | 0.324 | 1172.41 | -0.0250945 |
+| T1b_complete3px_n50 | 50 | 7964 | 3627 | 1901 | 809 | 3.78 | 35.4 | 3.51 | 0.393 | 1.262 | 0.894 | 0.749 | 0.324 | 1169.66 | -0.0262321 |
+| T2_merge_n50 | 50 | 7930 | 3749 | 1890 | 830 | 3.86 | 34.1 | 3.66 | 0.402 | 1.317 | 0.900 | 0.717 | 0.315 | 1172.55 | -0.0253092 |
+| T3_retri_n50 | 50 | 8448 | 3810 | 1993 | 849 | 3.83 | 34.8 | 3.61 | 0.408 | 1.327 | 0.895 | 0.758 | 0.324 | 1173.01 | -0.025063 |
+| U65_default_user | 65 | 11493 | 5138 | 2364 | 1040 | 3.86 | 36.2 | 3.36 | 0.405 | 1.295 | 0.890 | 0.729 | 0.314 | 1181.92 | -0.0207529 |
+
+**Track-length distribution (share of landmarks):**
+
+| Images | Run | 2 views | 3 views | 4–5 views | 6+ views | Observations per landmark |
+|---|---|---|---|---|---|---|
+| 20 | T0 | 56.2% | 20.1% | 15.0% | 8.8% | 3.00 |
+| 20 | T1 completion | 33.8% | 21.4% | 23.6% | 21.2% | 3.94 |
+| 50 | T0 | 56.7% | 19.7% | 15.8% | 7.8% | 2.96 |
+| 50 | T1 completion | 34.8% | 21.4% | 24.9% | 18.9% | 3.82 |
+
+## Findings
+
+* **Completion helps consistently at 20, 35 and 50 images:**
+  * the two-view share falls from 56% to 34–35%;
+  * mean track length rises from 3.0 to 3.8–3.9;
+  * reliable landmarks rise 22–25% (1264→1542, 2297→2807, 3006→3763);
+  * reliable statue-region points rise 20–25%.
+  * Total landmarks fall about 4%: better-constrained BA removes weak points.
+* **Reprojection error rises, and that's expected:**
+  * The median goes from ~0.28 to ~0.39 px and P95 from ~1.0 to ~1.2–1.3 px.
+  * Two-view points fit their two observations almost exactly by construction; longer tracks show honest residuals.
+  * It isn't caused by the 4 px acceptance: with a 3 px limit (T1b), P95 drops only 1.32→1.26 at 50 images while reliable points fall.
+  * The stricter "reliable" criterion (every observation ≤ 2 px) rises at the same time.
+* **Merging (T2) is neutral:** only 33–115 merges and changes within run-to-run noise. Window-8 matching creates few duplicates. It should matter once loop-closure pairs connect the start and end of the orbit (Phase 5).
+* **Re-triangulation (T3) is mixed:**
+  * It adds 109–612 mostly two-view landmarks.
+  * At 50 images it gains 61 reliable points; at 20 it lowers the worst PnP ratio (0.80→0.69); at 35 it changes little.
+  * Not enabled by default.
+* **Intrinsics:** with completion, f moves slightly (1167–1173 px at 20–50 images) and k1 drifts toward −0.025.
+* **65 images (`U65_default_user`, run with the user's `maxImages = 65`):**
+  * All 65 register: worst PnP ratio 0.73, P95 1.30 px, 78/78 BA calls applied.
+  * The cameras cover a full 360° orbit by about frame 62, and the horse (head, body, four legs) is clearly recognisable.
+  * The orbit doesn't close: frames 58–64 come back near frames 0–4, but window-8 matching never links them, so the offset there is uncorrected drift.
+  * f drifts to 1182 px and k1 to −0.021.
+  * **Loop-closure matching is therefore needed from about 60 images, not 140.**

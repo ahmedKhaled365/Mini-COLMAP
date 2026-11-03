@@ -274,23 +274,17 @@ int Reconstruction::triangulateNewPoints(
     const vector<PairMatch> &verifiedPairs,
     const Mat &K
 ) {
-    if (!images[imageId].registered)
+    // imageId < 0: re-triangulate every pair of registered images
+    if (imageId >= 0 && !images[imageId].registered)
         return 0;
 
     int addedPoints = 0;
 
     for (const auto &pair: verifiedPairs) {
-        if (pair.idx1 != imageId && pair.idx2 != imageId)
+        if (imageId >= 0 && pair.idx1 != imageId && pair.idx2 != imageId)
             continue;
 
-        int oldImageId;
-
-        if (pair.idx1 == imageId)
-            oldImageId = pair.idx2;
-        else
-            oldImageId = pair.idx1;
-
-        if (!images[oldImageId].registered)
+        if (!images[pair.idx1].registered || !images[pair.idx2].registered)
             continue;
 
         auto calcProjectoinMatrix = [&]() -> array<Mat, 2> {
@@ -683,4 +677,215 @@ bool Reconstruction::exportPLY(const string &filename) const {
     file.close();
 
     return file.good();
+}
+
+
+// --------------------------------------------------
+// Track completion, merging and re-triangulation
+// --------------------------------------------------
+
+void Reconstruction::buildCorrespondenceGraph(const vector<PairMatch> &verifiedPairs) {
+    correspondenceGraph.assign(images.size(), {});
+
+    for (int i = 0; i < static_cast<int>(images.size()); i++)
+        correspondenceGraph[i].resize(images[i].keypoints.size());
+
+    for (const auto &pair: verifiedPairs) {
+        for (const auto &m: pair.matches) {
+            correspondenceGraph[pair.idx1][m.queryIdx].push_back({pair.idx2, m.trainIdx});
+            correspondenceGraph[pair.idx2][m.trainIdx].push_back({pair.idx1, m.queryIdx});
+        }
+    }
+}
+
+double Reconstruction::reprojectionError(
+    const Point3d &X,
+    int imageId,
+    int keypointId,
+    const Mat &K
+) const {
+    double depth = 0;
+    double error = Diagnostics::observationError(images[imageId], X, keypointId, K, &depth);
+
+    return depth > 0 ? error : numeric_limits<double>::infinity();
+}
+
+int Reconstruction::completeTracks(const Mat &K, double maxError) {
+    if (correspondenceGraph.empty())
+        return 0;
+
+    int added = 0;
+
+    for (int l = 0; l < static_cast<int>(landmarks.size()); l++) {
+        auto &landmark = landmarks[l];
+
+        // The observation list grows while it is scanned, so newly added
+        // observations propagate the track further (transitive completion).
+        for (size_t o = 0; o < landmark.observations.size(); o++) {
+            const Observation obs = landmark.observations[o];
+
+            // Best candidate per image, so one image never gets two keypoints
+            map<int, pair<double, int> > best;
+
+            for (const auto &[otherImage, otherKeypoint]:
+                 correspondenceGraph[obs.imageId][obs.keypointId]) {
+                if (!images[otherImage].registered)
+                    continue;
+
+                if (observationToLandmark[otherImage][otherKeypoint] != -1)
+                    continue;
+
+                bool seen = false;
+                for (const auto &existing: landmark.observations) {
+                    if (existing.imageId == otherImage) {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (seen)
+                    continue;
+
+                double error = reprojectionError(
+                    landmark.position, otherImage, otherKeypoint, K
+                );
+
+                if (error > maxError)
+                    continue;
+
+                auto it = best.find(otherImage);
+                if (it == best.end() || error < it->second.first)
+                    best[otherImage] = {error, otherKeypoint};
+            }
+
+            for (const auto &[imageId, candidate]: best) {
+                landmark.observations.push_back({imageId, candidate.second});
+                observationToLandmark[imageId][candidate.second] = l;
+                added++;
+            }
+        }
+    }
+
+    trackStats.completedObservations += added;
+    return added;
+}
+
+int Reconstruction::mergeTracks(const Mat &K, double maxError) {
+    if (correspondenceGraph.empty())
+        return 0;
+
+    int merges = 0;
+    vector<bool> keep(landmarks.size(), true);
+
+    for (int i = 0; i < static_cast<int>(images.size()); i++) {
+        if (!images[i].registered)
+            continue;
+
+        for (int kp = 0; kp < static_cast<int>(correspondenceGraph[i].size()); kp++) {
+            for (const auto &[j, m]: correspondenceGraph[i][kp]) {
+                // Re-read every time: a merge below may have changed ownership
+                const int l1 = observationToLandmark[i][kp];
+                if (l1 < 0)
+                    break;
+
+                if (!images[j].registered)
+                    continue;
+
+                const int l2 = observationToLandmark[j][m];
+                if (l2 < 0 || l2 == l1)
+                    continue;
+
+                auto &a = landmarks[l1];
+                auto &b = landmarks[l2];
+
+                // A merged track must keep one observation per image
+                set<int> imagesA;
+                for (const auto &obs: a.observations)
+                    imagesA.insert(obs.imageId);
+
+                bool conflict = false;
+                for (const auto &obs: b.observations) {
+                    if (imagesA.count(obs.imageId)) {
+                        conflict = true;
+                        break;
+                    }
+                }
+                if (conflict)
+                    continue;
+
+                // Track-length weighted average of the two points
+                const double na = a.observations.size();
+                const double nb = b.observations.size();
+                const Point3d X = (a.position * na + b.position * nb) * (1.0 / (na + nb));
+
+                bool consistent = true;
+                for (const auto *track: {&a, &b}) {
+                    for (const auto &obs: track->observations) {
+                        if (reprojectionError(X, obs.imageId, obs.keypointId, K) > maxError) {
+                            consistent = false;
+                            break;
+                        }
+                    }
+                    if (!consistent)
+                        break;
+                }
+                if (!consistent)
+                    continue;
+
+                a.position = X;
+                for (const auto &obs: b.observations) {
+                    a.observations.push_back(obs);
+                    observationToLandmark[obs.imageId][obs.keypointId] = l1;
+                }
+                b.observations.clear();
+                keep[l2] = false;
+                merges++;
+            }
+        }
+    }
+
+    if (merges > 0)
+        compactLandmarks(keep);
+
+    trackStats.mergedLandmarks += merges;
+    return merges;
+}
+
+int Reconstruction::retriangulate(const vector<PairMatch> &verifiedPairs, const Mat &K) {
+    int added = triangulateNewPoints(-1, verifiedPairs, K);
+    trackStats.retriangulatedLandmarks += added;
+    return added;
+}
+
+int Reconstruction::countInvariantViolations() const {
+    int violations = 0;
+    size_t totalObservations = 0;
+
+    for (int l = 0; l < static_cast<int>(landmarks.size()); l++) {
+        set<int> seenImages;
+
+        for (const auto &obs: landmarks[l].observations) {
+            totalObservations++;
+
+            if (!seenImages.insert(obs.imageId).second)
+                violations++;
+
+            if (observationToLandmark[obs.imageId][obs.keypointId] != l)
+                violations++;
+        }
+    }
+
+    size_t assigned = 0;
+    for (const auto &index: observationToLandmark) {
+        for (int l: index) {
+            if (l >= 0)
+                assigned++;
+        }
+    }
+
+    // Every assigned keypoint must correspond to exactly one observation
+    violations += static_cast<int>(
+        assigned > totalObservations ? assigned - totalObservations : totalObservations - assigned
+    );
+
+    return violations;
 }
