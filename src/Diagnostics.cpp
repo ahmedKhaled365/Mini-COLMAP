@@ -510,6 +510,70 @@ void Diagnostics::writeInitCandidatesCsv(
 // PLY outputs
 // --------------------------------------------------
 
+// Writes colored vertices (RGB) and optional colored edges as an ASCII or
+// binary little-endian PLY. Binary files are ~2.5x smaller and load faster.
+static bool writePly(
+    const string &path,
+    const vector<Point3d> &vertices,
+    const vector<Vec3b> &vertexColors,
+    const vector<array<int, 2> > &edges,
+    const vector<Vec3b> &edgeColors,
+    bool binary
+) {
+    ofstream file(path, binary ? ios::binary : ios::out);
+
+    if (!file.is_open())
+        return false;
+
+    file << "ply\n"
+            << (binary ? "format binary_little_endian 1.0\n" : "format ascii 1.0\n")
+            << "element vertex " << vertices.size() << '\n'
+            << "property float x\nproperty float y\nproperty float z\n"
+            << "property uchar red\nproperty uchar green\nproperty uchar blue\n";
+
+    if (!edges.empty()) {
+        file << "element edge " << edges.size() << '\n'
+                << "property int vertex1\nproperty int vertex2\n"
+                << "property uchar red\nproperty uchar green\nproperty uchar blue\n";
+    }
+
+    file << "end_header\n";
+
+    if (binary) {
+        for (size_t i = 0; i < vertices.size(); i++) {
+            const float xyz[3] = {
+                static_cast<float>(vertices[i].x),
+                static_cast<float>(vertices[i].y),
+                static_cast<float>(vertices[i].z)
+            };
+            file.write(reinterpret_cast<const char *>(xyz), sizeof(xyz));
+            file.write(reinterpret_cast<const char *>(vertexColors[i].val), 3);
+        }
+
+        for (size_t i = 0; i < edges.size(); i++) {
+            const int32_t ids[2] = {edges[i][0], edges[i][1]};
+            file.write(reinterpret_cast<const char *>(ids), sizeof(ids));
+            file.write(reinterpret_cast<const char *>(edgeColors[i].val), 3);
+        }
+    } else {
+        file << setprecision(7);
+
+        for (size_t i = 0; i < vertices.size(); i++) {
+            const Vec3b &c = vertexColors[i];
+            file << vertices[i].x << ' ' << vertices[i].y << ' ' << vertices[i].z << ' '
+                    << int(c[0]) << ' ' << int(c[1]) << ' ' << int(c[2]) << '\n';
+        }
+
+        for (size_t i = 0; i < edges.size(); i++) {
+            const Vec3b &c = edgeColors[i];
+            file << edges[i][0] << ' ' << edges[i][1] << ' '
+                    << int(c[0]) << ' ' << int(c[1]) << ' ' << int(c[2]) << '\n';
+        }
+    }
+
+    return file.good();
+}
+
 bool Diagnostics::exportPoints(
     const string &path,
     const vector<ImageData> &images,
@@ -535,29 +599,12 @@ bool Diagnostics::exportPoints(
         }
 
         points.push_back(landmark.position);
-        colors.push_back(landmarkColor(images, landmark));
+
+        const Vec3b c = landmarkColor(images, landmark); // BGR
+        colors.push_back(Vec3b(c[2], c[1], c[0]));
     }
 
-    ofstream file(path);
-
-    if (!file.is_open())
-        return false;
-
-    file << "ply\nformat ascii 1.0\n"
-            << "element vertex " << points.size() << '\n'
-            << "property float x\nproperty float y\nproperty float z\n"
-            << "property uchar red\nproperty uchar green\nproperty uchar blue\n"
-            << "end_header\n";
-
-    file << setprecision(7);
-
-    for (size_t i = 0; i < points.size(); i++) {
-        const Vec3b &c = colors[i]; // BGR
-        file << points[i].x << ' ' << points[i].y << ' ' << points[i].z << ' '
-                << int(c[2]) << ' ' << int(c[1]) << ' ' << int(c[0]) << '\n';
-    }
-
-    return file.good();
+    return writePly(path, points, colors, {}, {}, config.binaryPly);
 }
 
 bool Diagnostics::exportCameras(
@@ -644,35 +691,7 @@ bool Diagnostics::exportCameras(
         }
     }
 
-    ofstream file(path);
-
-    if (!file.is_open())
-        return false;
-
-    file << "ply\nformat ascii 1.0\n"
-            << "element vertex " << vertices.size() << '\n'
-            << "property float x\nproperty float y\nproperty float z\n"
-            << "property uchar red\nproperty uchar green\nproperty uchar blue\n"
-            << "element edge " << edges.size() << '\n'
-            << "property int vertex1\nproperty int vertex2\n"
-            << "property uchar red\nproperty uchar green\nproperty uchar blue\n"
-            << "end_header\n";
-
-    file << setprecision(7);
-
-    for (size_t i = 0; i < vertices.size(); i++) {
-        const Vec3b &c = vertexColors[i];
-        file << vertices[i].x << ' ' << vertices[i].y << ' ' << vertices[i].z << ' '
-                << int(c[0]) << ' ' << int(c[1]) << ' ' << int(c[2]) << '\n';
-    }
-
-    for (size_t i = 0; i < edges.size(); i++) {
-        const Vec3b &c = edgeColors[i];
-        file << edges[i][0] << ' ' << edges[i][1] << ' '
-                << int(c[0]) << ' ' << int(c[1]) << ' ' << int(c[2]) << '\n';
-    }
-
-    return file.good();
+    return writePly(path, vertices, vertexColors, edges, edgeColors, config.binaryPly);
 }
 
 // --------------------------------------------------

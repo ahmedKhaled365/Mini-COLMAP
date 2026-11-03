@@ -10,3 +10,4 @@ CMakeCache.txt
 # Run outputs (reports and CSVs are kept, heavy files are not)
 results/**/*.png
 results/**/*.log
+results/latest/

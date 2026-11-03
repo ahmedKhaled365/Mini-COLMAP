@@ -153,3 +153,50 @@ Mini-COLMAP.exe --no-refine-focal --no-refine-k1 --out ../results/BA2_incrementa
 Mini-COLMAP.exe --ba final --no-refine-focal --no-refine-k1 --out ../results/BA1_final
 python ../tools/compare_runs.py BA1_final BA4_incr_focal_k1_f1200              # from results/
 ```
+
+---
+
+# Output size and dataset expansion
+
+## Output levels (`--output`, default `standard`)
+
+| Level | Files |
+|---|---|
+| `minimal` | `report.txt`, `checkpoints.csv`, `registration.csv`, `init_candidates.csv`, `ba_log.csv`, `preview.png` |
+| `standard` | + `points_all.ply`, `points_reliable.ply`, `cameras.ply` |
+| `full` | + `points_3plus`, `points_4plus`, `points_unreliable`, `scene_with_cameras`, `checkpoint_NNN_cameras.ply` |
+
+* **PLY encoding:** binary little-endian by default; `--ascii-ply` restores text files. The binary files decode to the same points, colours and edges as ASCII (max relative difference 5e-7, i.e. float precision).
+* **Size:** a 20-image run at `standard` is about 260 KB, against about 1 MB before.
+* **Cleanup:** PLY/PNG/log files were removed from superseded runs. They were kept for `B0_baseline_f1344`, `P_parallax_f1200`, `BA1_final`, `BA4_incr_focal_k1_f1200` and `_original_baseline_run`. Every report and CSV remains.
+* `results/latest/` is rewritten by each default run and is not versioned.
+
+## Expansion baseline: current default at 20 / 35 / 50 images (before Phase 4)
+
+| run | reg | landmarks | reliable | object | object_rel | track | two_view_pct | angle_med | rp_med | rp_p95 | pnp_mean | pnp_min | step_cv | focal | k1 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| BA4_incr_focal_k1_f1200 | 20 | 3643 | 1264 | 846 | 356 | 3.00 | 56.2 | 2.62 | 0.276 | 0.994 | 0.926 | 0.795 | 0.496 | 1167.12 | -0.0279331 |
+| E35_default | 35 | 6423 | 2297 | 1667 | 634 | 2.97 | 56.1 | 3.19 | 0.289 | 1.052 | 0.908 | 0.792 | 0.374 | 1164.44 | -0.0300325 |
+| E50_default | 50 | 8321 | 3006 | 1985 | 673 | 2.96 | 56.7 | 3.33 | 0.295 | 1.075 | 0.902 | 0.771 | 0.323 | 1165.98 | -0.029172 |
+
+**Milestone gates:**
+
+| Gate | 35 images | 50 images |
+|---|---|---|
+| All images registered | pass | pass |
+| Worst PnP inlier ratio ≥ 0.6 | 0.79 | 0.77 |
+| Reprojection P95 ≤ 1.5 px | 1.05 | 1.08 |
+| All BA calls converged and applied | 45 / 45 | 62 / 62 |
+| Focal length stable vs previous milestone | 1167 → 1164 | 1166 |
+| Smooth trajectory in `preview.png` | pass | pass |
+
+**Observations:**
+* k1 drifts slightly (−0.028 → −0.030 → −0.029). That's small in absolute terms, but more than the 2% rule of thumb.
+* At 50 images the cameras cover about 270° of the orbit. The trajectory is a smooth arc, apart from a tight cluster at frames 0–8 where the camera paused.
+* Quality holds steady as images are added:
+  * reliable fraction 35% / 36% / 36%;
+  * mean track length 3.0;
+  * two-view share 56–57%;
+  * camera step CV falls 0.50 → 0.37 → 0.32.
+* The 20-camera checkpoint inside the 35/50-image runs (3,644 landmarks) reproduces the standalone 20-image result (3,643): adding images doesn't disturb the early reconstruction.
+* **Time:** 87 s for 35 images and 111 s for 50, both dominated by feature extraction and matching. BA takes 4–6 s.

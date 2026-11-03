@@ -53,6 +53,9 @@ struct DiagnosticsConfig {
 
     // Object region radius relative to median camera-to-lookAt distance
     double objectRegionFactor = 0.35;
+
+    // PLY encoding: binary little-endian (default) or ASCII
+    bool binaryPly = true;
 };
 
 struct CameraStats {

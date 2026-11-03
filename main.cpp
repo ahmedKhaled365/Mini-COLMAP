@@ -67,6 +67,12 @@ struct RunConfig {
     double filterMaxError = 4.0;  // px
     double filterMinAngle = 1.0;  // deg, same as the creation threshold
 
+    // Outputs: "minimal" (reports, CSVs, preview), "standard" (+ all and
+    // reliable points, cameras) or "full" (+ every PLY variant and a PLY at
+    // each checkpoint). checkpoints.csv is always written.
+    string outputLevel = "standard";
+    bool binaryPly = true;
+
     // Diagnostics-only mode: sweep focal lengths and exit.
     bool focalSweep = false;
 };
@@ -90,6 +96,8 @@ void printUsage() {
             << "  --no-refine-k1     keep k1 fixed (0)\n"
             << "  --huber D          Huber loss scale [px] (default 2)\n"
             << "  --ba-threads N     Ceres threads (default 1 = reproducible, 0 = all)\n"
+            << "  --output LEVEL     minimal | standard | full (default standard)\n"
+            << "  --ascii-ply        write ASCII instead of binary PLY files\n"
             << "  --ba-max-error E   post-BA observation filter [px] (default 4)\n"
             << "  --ba-min-angle D   post-BA triangulation angle filter [deg] (default 1)\n"
             << "  --focal-sweep      only run the focal-length sweep\n";
@@ -125,6 +133,8 @@ void parseArguments(int argc, char **argv) {
         else if (arg == "--refine-k1") CONFIG.refineK1 = true;
         else if (arg == "--huber") CONFIG.huberScale = stod(next());
         else if (arg == "--ba-threads") CONFIG.baThreads = stoi(next());
+        else if (arg == "--output") CONFIG.outputLevel = next();
+        else if (arg == "--ascii-ply") CONFIG.binaryPly = false;
         else if (arg == "--ba-max-error") CONFIG.filterMaxError = stod(next());
         else if (arg == "--ba-min-angle") CONFIG.filterMinAngle = stod(next());
         else if (arg == "--focal-sweep") CONFIG.focalSweep = true;
@@ -530,7 +540,9 @@ void saveCheckpoint(
 
     auto report = diagnostics.analyze(images, landmarks, K);
     Diagnostics::appendCheckpointCsv(report, outPath("checkpoints.csv"));
-    diagnostics.exportPoints(outPath(name + ".ply"), images, landmarks, K);
+
+    if (CONFIG.outputLevel == "full")
+        diagnostics.exportPoints(outPath(name + ".ply"), images, landmarks, K);
 
     cout << fixed << setprecision(3)
             << "[Checkpoint] " << name
@@ -864,7 +876,9 @@ int main(int argc, char **argv) {
         if (CONFIG.baMode == "incremental")
             runBundleAdjustment(reconstruction, K, -1, false);
 
-        Diagnostics diagnostics;
+        DiagnosticsConfig diagnosticsConfig;
+        diagnosticsConfig.binaryPly = CONFIG.binaryPly;
+        Diagnostics diagnostics(diagnosticsConfig);
         saveCheckpoint(reconstruction, diagnostics, K, "checkpoint_002_cameras");
 
         // Step 6: Register remaining images
@@ -904,13 +918,18 @@ int main(int argc, char **argv) {
             reconstruction.getRegistrationLog(), outPath("registration.csv")
         );
 
-        diagnostics.exportPoints(outPath("points_all.ply"), images, landmarks, K, 2);
-        diagnostics.exportPoints(outPath("points_3plus.ply"), images, landmarks, K, 3);
-        diagnostics.exportPoints(outPath("points_4plus.ply"), images, landmarks, K, 4);
-        diagnostics.exportPoints(outPath("points_reliable.ply"), images, landmarks, K, 2, 1);
-        diagnostics.exportPoints(outPath("points_unreliable.ply"), images, landmarks, K, 2, 2);
-        diagnostics.exportCameras(outPath("cameras.ply"), images, landmarks, K, false);
-        diagnostics.exportCameras(outPath("scene_with_cameras.ply"), images, landmarks, K, true);
+        if (CONFIG.outputLevel == "standard" || CONFIG.outputLevel == "full") {
+            diagnostics.exportPoints(outPath("points_all.ply"), images, landmarks, K, 2);
+            diagnostics.exportPoints(outPath("points_reliable.ply"), images, landmarks, K, 2, 1);
+            diagnostics.exportCameras(outPath("cameras.ply"), images, landmarks, K, false);
+        }
+
+        if (CONFIG.outputLevel == "full") {
+            diagnostics.exportPoints(outPath("points_3plus.ply"), images, landmarks, K, 3);
+            diagnostics.exportPoints(outPath("points_4plus.ply"), images, landmarks, K, 4);
+            diagnostics.exportPoints(outPath("points_unreliable.ply"), images, landmarks, K, 2, 2);
+            diagnostics.exportCameras(outPath("scene_with_cameras.ply"), images, landmarks, K, true);
+        }
         diagnostics.renderPreview(
             outPath("preview.png"), images, landmarks, K,
             "f=" + to_string(cvRound(K.at<double>(0, 0))) +
